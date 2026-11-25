@@ -7,7 +7,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 echo "== building harness =="
-g++ -O2 -Wall -std=c++17 -o tests/gen_matrix tests/gen_matrix.cpp src/generator.cpp || exit 1
+g++ -O2 -Wall -std=c++17 -o tests/gen_matrix tests/gen_matrix.cpp src/generator.cpp src/cmake_build.cpp || exit 1
 
 rm -rf tests/out
 echo "== generating =="
