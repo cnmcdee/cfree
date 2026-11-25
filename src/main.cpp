@@ -37,6 +37,7 @@
 #include "project_io.h"
 #include "debugger.h"
 #include "debugger_ui.h"
+#include "preferences.h"  // [font-settings]
 
 // ---------------------------------------------------------------- state
 
@@ -3025,6 +3026,35 @@ static gboolean selftest_step(gpointer) {
               sess2.breakpoints()[0].location == "main");
     }
 
+    // [font-settings] Font settings: persistence round-trip,
+    // sanitising/clamping, and live application to a text view.
+    {
+        FontSettings fs;
+        fs.font = "DejaVu Sans 14";
+        fs.code_font = "DejaVu Sans Mono 13";
+        check(fs.save("/tmp/fdesigner_font.conf"));
+        FontSettings fs2;
+        check(fs2.load("/tmp/fdesigner_font.conf"));
+        check(fs2.font == "DejaVu Sans 14" &&
+              fs2.code_font == "DejaVu Sans Mono 13");
+        check(FontSettings::sanitized("", "Sans 10") == "Sans 10");
+        check(FontSettings::size_of(
+                  FontSettings::sanitized("Sans 99", "Sans 10")) == 48);
+        check(FontSettings::size_of(
+                  FontSettings::sanitized("Sans 2", "Sans 10")) == 6);
+        GtkWidget* tv = gtk_text_view_new();
+        gtk_widget_show(tv);
+        preferences_apply_to_text_view(tv, fs);
+        while (gtk_events_pending()) gtk_main_iteration();
+        std::string applied = preferences_applied_font(tv);
+        check(FontSettings::family_of(applied) ==
+                  "DejaVu Sans Mono" &&
+              FontSettings::size_of(applied) == 13);
+        gtk_widget_destroy(tv);
+        preferences_apply(fs);  // screen-wide, must not crash
+        preferences_apply(FontSettings());  // back to defaults
+    }
+
     std::printf("SELFTEST %s items=%zu\n", ok ? "PASS" : "FAIL",
                 g_items.size());
     std::fflush(stdout);
@@ -3037,6 +3067,10 @@ static gboolean selftest_step(gpointer) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
+
+    // [font-settings] Apply saved global font settings before
+    // building the UI, so the designer opens in the chosen font.
+    preferences_apply(preferences_current());
 
     // Selection outline for placed widgets.
     GtkCssProvider* css = gtk_css_provider_new();
@@ -3110,6 +3144,16 @@ int main(int argc, char** argv) {
     GObject* mi_save = gtk_builder_get_object(builder, "mi_save");
     if (mi_save)
         g_signal_connect(mi_save, "activate", G_CALLBACK(on_save), nullptr);
+
+    // [font-settings] Edit -> Preferences... opens the font
+    // settings dialog (src/preferences.cpp).
+    GObject* mi_prefs = gtk_builder_get_object(builder, "mi_preferences");
+    if (mi_prefs)
+        g_signal_connect(mi_prefs, "activate",
+                         G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+                             preferences_open(g_window);
+                         }),
+                         nullptr);
 
     // Debug menu -> stepping debugger window / settings.
     GObject* mi_dbg = gtk_builder_get_object(builder, "mi_debug_open");
@@ -3188,6 +3232,14 @@ int main(int argc, char** argv) {
         g_idle_add(+[](gpointer) -> gboolean {
                        debugger_window_open(g_window);
                        debugger_settings_open(g_window);
+                       return G_SOURCE_REMOVE;
+                   },
+                   nullptr);
+    // [font-settings] Test hook (used by tests/font_tests.sh):
+    // open the Preferences dialog at startup.
+    if (std::getenv("FDESIGNER_OPEN_PREFERENCES") != nullptr)
+        g_idle_add(+[](gpointer) -> gboolean {
+                       preferences_open(g_window);
                        return G_SOURCE_REMOVE;
                    },
                    nullptr);

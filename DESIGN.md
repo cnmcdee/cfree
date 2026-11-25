@@ -297,3 +297,16 @@ project holding every new widget, checks the markers, compiles the
 generated app with `-Wall -Wextra`, and runs it briefly. The generator
 matrix (`tests/run_matrix.sh` cases 02/03) also covers every new type
 automatically via `kTypes`.
+
+## Global font settings (2026-11-26)
+
+**Edit → Preferences…** opens a font dialog (interface font + code /
+text-view font, via GtkFontButton). Choices persist in
+`~/.config/fdesigner/settings.conf` (`font=`, `code_font=`, Pango
+descriptions; `FDESIGNER_SETTINGS_CONF` overrides the path for tests) and
+are applied live at startup and on Apply: the interface font via a
+screen-wide CSS provider, the code font via a `textview` CSS rule (so
+Text/Memo views and any other GtkTextView use it). Invalid sizes are
+clamped to 6–48 pt and empty values fall back to the defaults. Logic lives
+in `src/preferences.h/.cpp`; tests: a font block in the self-test plus
+`tests/font_tests.sh` (harness + self-test + Preferences dialog smoke test).

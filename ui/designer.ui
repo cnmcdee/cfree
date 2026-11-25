@@ -65,6 +65,23 @@
               </object>
             </child>
             <child>
+              <object class="GtkMenuItem" id="menu_edit">
+                <property name="label">Edit</property>
+                <property name="visible">True</property>
+                <child type="submenu">
+                  <object class="GtkMenu" id="edit_menu">
+                    <property name="visible">True</property>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_preferences">
+                        <property name="label">Preferences…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
               <object class="GtkMenuItem" id="menu_debug">
                 <property name="label">Debug</property>
                 <property name="visible">True</property>
