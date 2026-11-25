@@ -141,6 +141,10 @@ public:
     // before Run); start() inserts it into gdb. Returns false if the
     // location does not parse.
     bool stage_breakpoint(const std::string& location);
+    // Erase a staged (not yet inserted into gdb, id == 0) breakpoint
+    // by location. Used by the code-view gutter toggle: remove_breakpoint
+    // needs a live gdb, this one does not. Returns false if not staged.
+    bool remove_staged_breakpoint(const std::string& location);
     bool add_breakpoint(const std::string& location, Breakpoint& out,
                         std::string& err);
     bool remove_breakpoint(int id, std::string& err);

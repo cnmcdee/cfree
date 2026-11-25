@@ -705,3 +705,67 @@ void debugger_window_open(GtkWidget* parent) {
     }
     refresh_buttons();
 }
+
+// ------------------------------------------------------- gutter integration
+// Code-view gutter toggles a file:line breakpoint in the shared session.
+// See debugger_ui.h. The session is created on demand (restoring saved
+// breakpoints) so a gutter click works before the debugger window opens.
+
+namespace {
+const Breakpoint* find_bp(const GdbSession& sess, const std::string& file,
+                          int line) {
+    std::string loc = file + ":" + std::to_string(line);
+    for (const auto& b : sess.breakpoints()) {
+        if (b.location == loc) return &b;
+        if (!b.file.empty() && b.file == file && b.line == line) return &b;
+    }
+    return nullptr;
+}
+}  // namespace
+
+bool debugger_toggle_breakpoint(const std::string& file, int line) {
+    std::string err;
+    if (!ensure_session(err)) return false;
+    std::string loc = file + ":" + std::to_string(line);
+    const Breakpoint* hit = find_bp(*g_session, file, line);
+    if (hit) {
+        if (hit->id == 0) {
+            g_session->remove_staged_breakpoint(loc);
+        } else if (g_session->is_alive()) {
+            if (!g_session->remove_breakpoint(hit->id, err)) return true;
+        } else {
+            g_session->remove_staged_breakpoint(loc);
+        }
+        g_session->save_breakpoints();
+        if (g_dbg_window) sync_ui_from_session();
+        return false;
+    }
+    bool ok;
+    if (g_session->is_alive()) {
+        Breakpoint b;
+        ok = g_session->add_breakpoint(loc, b, err);
+    } else {
+        ok = g_session->stage_breakpoint(loc);
+    }
+    if (ok) {
+        g_session->save_breakpoints();
+        if (g_dbg_window) sync_ui_from_session();
+    }
+    return ok;
+}
+
+bool debugger_has_breakpoint(const std::string& file, int line) {
+    std::string err;
+    if (!ensure_session(err)) return false;
+    return find_bp(*g_session, file, line) != nullptr;
+}
+
+std::vector<int> debugger_breakpoint_lines(const std::string& file) {
+    std::vector<int> out;
+    std::string err;
+    if (!ensure_session(err)) return out;
+    for (const auto& b : g_session->breakpoints())
+        if (!b.file.empty() && b.file == file && b.line > 0)
+            out.push_back(b.line);
+    return out;
+}

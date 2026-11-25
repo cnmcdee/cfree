@@ -806,6 +806,15 @@ bool GdbSession::add_breakpoint(const std::string& location, Breakpoint& out,
     return true;
 }
 
+bool GdbSession::remove_staged_breakpoint(const std::string& location) {
+    auto it = std::find_if(bps_.begin(), bps_.end(), [&](const Breakpoint& b) {
+        return b.location == location && b.id == 0;
+    });
+    if (it == bps_.end()) return false;
+    bps_.erase(it);
+    return true;
+}
+
 bool GdbSession::remove_breakpoint(int id, std::string& err) {
     MiValue r;
     if (!command("-break-delete " + std::to_string(id), r, err)) return false;
