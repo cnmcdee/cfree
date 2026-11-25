@@ -256,3 +256,44 @@ panel in the main window). It drives real gdb over the MI protocol
 - **Tests:** `tests/debugger_tests.sh` (console suite, GTK suite under
   Xvfb, GUI smoke test) — see `tests/debugger/` for the targets and the
   headless harness `dbg_harness.cpp`, which drives `GdbSession` directly.
+
+## Lazarus-style widgets (2026-11-25)
+
+Twenty Lazarus-palette widgets were added alongside the original Tk set.
+Each is placeable from the palette (grouped sections in the left pane),
+selectable/draggable/deletable, has a per-type property table in `props.h`,
+and is emitted by the generator as a standalone class with working GTK code.
+
+| Lazarus | GTK 3 | Key properties |
+|---|---|---|
+| Memo | GtkTextView in GtkScrolledWindow | text, editable, wrap-mode |
+| GroupBox | GtkFrame | label, shadow-type |
+| Panel | GtkFrame | label, shadow-type |
+| Image | GtkImage (file, else missing-image icon) | file, pixel-size |
+| Shape | GtkDrawingArea, cairo draw | shape (Rectangle/Ellipse/Line/Triangle), fill-color |
+| Notebook (PageControl) | GtkNotebook | pages ("Tab 1|Tab 2"), page |
+| ScrollBox | GtkScrolledWindow + GtkBox | label |
+| Splitter | GtkPaned | position, orientation |
+| StatusBar | GtkStatusbar | text |
+| ToolBar | GtkToolbar | items ("New|Open|Save"), toolbar-style |
+| MainMenu (MenuBar) | GtkMenuBar | menus ("File|Edit|Help") |
+| SpinEdit | GtkSpinButton | minimum, maximum, step, value, digits, numeric, wrap |
+| TrackBar | GtkScale | minimum, maximum, step, value, orientation |
+| ProgressBar | GtkProgressBar | fraction, show-text, text |
+| DateTimePicker | GtkCalendar + entry | date (YYYY-MM-DD), show-heading, show-day-names |
+| ColorBox | GtkColorButton | color, use-alpha, title |
+| ListView | GtkTreeView + GtkListStore | columns ("Name|Value"), items ("a,1;b,2"), headers-visible |
+| TreeView | GtkTreeView + GtkTreeStore | items ("Root/Child;Other"), headers-visible |
+| StringGrid | GtkTreeView + GtkListStore | rows, columns, headers-visible |
+| Plot | GtkDrawingArea, cairo sine wave | title, line-color |
+
+Already present before this change: Button, Label, Entry (Edit), CheckButton,
+RadioButton, ComboBox, ListBox, Frame, Scale, Text, StockChart (chart/plot),
+Spreadsheet, Toplevel, Canvas, Scrollbar, MenuButton.
+
+Tests: the self-test gained a Phase 7 block (place + edit + drag/delete +
+generate + per-widget code markers); `tests/widget_tests.sh` builds a
+project holding every new widget, checks the markers, compiles the
+generated app with `-Wall -Wextra`, and runs it briefly. The generator
+matrix (`tests/run_matrix.sh` cases 02/03) also covers every new type
+automatically via `kTypes`.

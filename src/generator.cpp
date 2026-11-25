@@ -60,6 +60,11 @@ static std::string enum_const(const std::string& prop, int v) {
         {"wrap-mode",
          {"GTK_WRAP_NONE", "GTK_WRAP_CHAR", "GTK_WRAP_WORD",
           "GTK_WRAP_WORD_CHAR"}},
+        {"orientation",
+         {"GTK_ORIENTATION_HORIZONTAL", "GTK_ORIENTATION_VERTICAL"}},
+        {"toolbar-style",
+         {"GTK_TOOLBAR_ICONS", "GTK_TOOLBAR_TEXT", "GTK_TOOLBAR_BOTH",
+          "GTK_TOOLBAR_BOTH_HORIZ"}},
     };
     auto it = kTable.find(prop);
     if (it == kTable.end() || v < 0 || v >= (int)it->second.size()) return "";
@@ -301,7 +306,8 @@ static std::string prop_lines(const Widget& w, const std::string& target,
         if (skip.count(name)) continue;
         const PropDef* def = find_prop(w.type, name);
         if (!def) continue;
-        if (w.type == "Scale" && name == "value") {
+        if ((w.type == "Scale" || w.type == "TrackBar") &&
+            name == "value") {
             o << "    gtk_range_set_value(GTK_RANGE(" << target << "), "
               << fmt_double(value) << ");\n";
             continue;
@@ -347,6 +353,229 @@ static std::string colour_lines(const Widget& w, const std::string& target) {
 
 // ------------------------------------------------------- widget classes
 
+// Split a spec on one separator, trimming parts, dropping empties.
+static std::vector<std::string> split_on(char sep, const std::string& spec) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    for (size_t i = 0; i <= spec.size(); ++i) {
+        if (i == spec.size() || spec[i] == sep) {
+            std::string one = trim(spec.substr(start, i - start));
+            if (!one.empty()) out.push_back(one);
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
+// "YYYY-MM-DD" -> y/m/d, false on garbage.
+static bool parse_ymd_gen(const std::string& s, int& y, int& m, int& d) {
+    return std::sscanf(s.c_str(), "%d-%d-%d", &y, &m, &d) == 3 && y >= 1 &&
+           m >= 1 && m <= 12 && d >= 1 && d <= 31;
+}
+
+// Append one notebook page per "Tab 1|Tab 2" entry (label body + tab label).
+static std::string emit_notebook_pages(const Widget& w, const std::string& M) {
+    std::ostringstream o;
+    for (const std::string& page :
+         split_on('|', prop_or(w, "pages", "Tab 1|Tab 2|Tab 3")))
+        o << "    gtk_notebook_append_page(GTK_NOTEBOOK(" << M
+          << "), gtk_label_new(\"" << esc_c(page)
+          << "\"), gtk_label_new(\"" << esc_c(page) << "\"));\n";
+    return o.str();
+}
+
+// Append one tool button per "New|Open|Save" entry.
+static std::string emit_toolbar_items(const Widget& w, const std::string& M) {
+    std::ostringstream o;
+    for (const std::string& name :
+         split_on('|', prop_or(w, "items", "New|Open|Save")))
+        o << "    gtk_toolbar_insert(GTK_TOOLBAR(" << M
+          << "), gtk_tool_button_new(nullptr, \"" << esc_c(name)
+          << "\"), -1);\n";
+    return o.str();
+}
+
+// Append one top-level item per "File|Edit|Help" entry.
+static std::string emit_menubar_items(const Widget& w, const std::string& M) {
+    std::ostringstream o;
+    for (const std::string& name :
+         split_on('|', prop_or(w, "menus", "File|Edit|Help")))
+        o << "    gtk_menu_shell_append(GTK_MENU_SHELL(" << M
+          << "), gtk_menu_item_new_with_label(\"" << esc_c(name)
+          << "\"));\n";
+    return o.str();
+}
+
+// Build a ListView's ListStore + columns from its columns/items props.
+// Columns: "Name|Value". Items: rows separated by ';', cells by ','.
+static std::string emit_listview_setup(const Widget& w, const std::string& M) {
+    std::vector<std::string> cols =
+        split_on('|', prop_or(w, "columns", "Name|Value"));
+    if (cols.empty()) cols.push_back("Name");
+    std::vector<std::vector<std::string>> rows;
+    for (const std::string& row : split_on(
+             ';', prop_or(w, "items", "Row 1,Value 1;Row 2,Value 2")))
+        rows.push_back(split_on(',', row));
+    std::ostringstream o;
+    o << "    GtkListStore* store = gtk_list_store_new(" << cols.size();
+    for (size_t i = 0; i < cols.size(); ++i) o << ", G_TYPE_STRING";
+    o << ");\n";
+    for (const auto& row : rows) {
+        o << "    {\n        GtkTreeIter iter;\n"
+          << "        gtk_list_store_append(store, &iter);\n";
+        for (size_t c = 0; c < cols.size() && c < row.size(); ++c)
+            o << "        gtk_list_store_set(store, &iter, " << c << ", \""
+              << esc_c(row[c]) << "\", -1);\n";
+        o << "    }\n";
+    }
+    o << "    gtk_tree_view_set_model(GTK_TREE_VIEW(" << M
+      << "), GTK_TREE_MODEL(store));\n";
+    for (size_t c = 0; c < cols.size(); ++c)
+        o << "    gtk_tree_view_append_column(GTK_TREE_VIEW(" << M
+          << "), gtk_tree_view_column_new_with_attributes(\""
+          << esc_c(cols[c])
+          << "\", gtk_cell_renderer_text_new(), \"text\", " << c
+          << ", nullptr));\n";
+    o << "    g_object_unref(store);\n";
+    return o.str();
+}
+
+// Build a TreeView's TreeStore from hierarchical "Root/Child;Other" items.
+static std::string emit_treeview_setup(const Widget& w, const std::string& M) {
+    std::vector<std::string> paths = split_on(
+        ';', prop_or(w, "items", "Root/Child 1;Root/Child 2;Other"));
+    std::ostringstream o;
+    o << "    GtkTreeStore* store = gtk_tree_store_new(1, G_TYPE_STRING);\n";
+    std::map<std::string, std::string> iters;  // path -> "&itN"
+    int n = 0;
+    for (const std::string& path : paths) {
+        std::vector<std::string> parts = split_on('/', path);
+        std::string prefix, parent = "nullptr";
+        for (const std::string& part : parts) {
+            if (!prefix.empty()) prefix += "/";
+            prefix += part;
+            auto found = iters.find(prefix);
+            if (found != iters.end()) {
+                parent = found->second;
+                continue;
+            }
+            std::string var = "it" + std::to_string(n++);
+            o << "    GtkTreeIter " << var << ";\n"
+              << "    gtk_tree_store_append(store, &" << var << ", " << parent
+              << ");\n"
+              << "    gtk_tree_store_set(store, &" << var << ", 0, \""
+              << esc_c(part) << "\", -1);\n";
+            iters[prefix] = "&" + var;
+            parent = "&" + var;
+        }
+    }
+    o << "    gtk_tree_view_set_model(GTK_TREE_VIEW(" << M
+      << "), GTK_TREE_MODEL(store));\n"
+      << "    gtk_tree_view_append_column(GTK_TREE_VIEW(" << M
+      << "), gtk_tree_view_column_new_with_attributes(\"Tree\", "
+         "gtk_cell_renderer_text_new(), \"text\", 0, nullptr));\n"
+      << "    g_object_unref(store);\n";
+    return o.str();
+}
+
+// Build a StringGrid's ListStore: N text columns, R rows of "RrCc" cells.
+static std::string emit_stringgrid_setup(const Widget& w,
+                                         const std::string& M) {
+    int rows = std::atoi(prop_or(w, "rows", "5").c_str());
+    int cols = std::atoi(prop_or(w, "columns", "4").c_str());
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    std::ostringstream o;
+    o << "    GtkListStore* store = gtk_list_store_new(" << cols;
+    for (int c = 0; c < cols; ++c) o << ", G_TYPE_STRING";
+    o << ");\n"
+      << "    for (int r = 0; r < " << rows << "; ++r) {\n"
+      << "        GtkTreeIter iter;\n"
+      << "        gtk_list_store_append(store, &iter);\n"
+      << "        for (int c = 0; c < " << cols << "; ++c) {\n"
+      << "            char cell[32];\n"
+      << "            std::snprintf(cell, sizeof cell, \"R%dC%d\", r + 1, c + 1);\n"
+      << "            gtk_list_store_set(store, &iter, c, cell, -1);\n"
+      << "        }\n"
+      << "    }\n"
+      << "    gtk_tree_view_set_model(GTK_TREE_VIEW(" << M
+      << "), GTK_TREE_MODEL(store));\n";
+    for (int c = 0; c < cols; ++c)
+        o << "    gtk_tree_view_append_column(GTK_TREE_VIEW(" << M
+          << "), gtk_tree_view_column_new_with_attributes(\"Col " << c + 1
+          << "\", gtk_cell_renderer_text_new(), \"text\", " << c
+          << ", nullptr));\n";
+    o << "    g_object_unref(store);\n";
+    return o.str();
+}
+
+// Draw handlers for the Shape and Plot widgets (member state; the on_draw
+// trampoline is a static member, like the StockChart's chart callbacks).
+static std::string shape_plot_draw_methods(const Widget& w) {
+    std::ostringstream o;
+    o << "\ngboolean " << w.name << "::on_draw(GtkWidget* w, cairo_t* cr,\n"
+      << "                              gpointer self) {\n"
+      << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+      << "    GtkAllocation a;\n"
+      << "    gtk_widget_get_allocation(w, &a);\n";
+    if (w.type == "Shape") {
+        o << "    cairo_set_source_rgba(cr, me->fill_.red, me->fill_.green,\n"
+          << "                          me->fill_.blue, me->fill_.alpha);\n"
+          << "    double x = 6, y = 6, ww = std::max(1.0, a.width - 12.0),\n"
+          << "           hh = std::max(1.0, a.height - 12.0);\n"
+          << "    switch (me->shape_) {\n"
+          << "        case 1:\n"
+          << "            cairo_save(cr);\n"
+          << "            cairo_translate(cr, x + ww / 2, y + hh / 2);\n"
+          << "            cairo_scale(cr, ww / 2, hh / 2);\n"
+          << "            cairo_arc(cr, 0, 0, 1, 0, 2 * G_PI);\n"
+          << "            cairo_restore(cr);\n"
+          << "            cairo_fill(cr);\n"
+          << "            break;\n"
+          << "        case 2:\n"
+          << "            cairo_set_line_width(cr, 3);\n"
+          << "            cairo_move_to(cr, x, y + hh);\n"
+          << "            cairo_line_to(cr, x + ww, y);\n"
+          << "            cairo_stroke(cr);\n"
+          << "            break;\n"
+          << "        case 3:\n"
+          << "            cairo_move_to(cr, x + ww / 2, y);\n"
+          << "            cairo_line_to(cr, x + ww, y + hh);\n"
+          << "            cairo_line_to(cr, x, y + hh);\n"
+          << "            cairo_close_path(cr);\n"
+          << "            cairo_fill(cr);\n"
+          << "            break;\n"
+          << "        default:\n"
+          << "            cairo_rectangle(cr, x, y, ww, hh);\n"
+          << "            cairo_fill(cr);\n"
+          << "            break;\n"
+          << "    }\n";
+    } else {  // Plot
+        o << "    cairo_set_source_rgb(cr, 1, 1, 1);\n"
+          << "    cairo_paint(cr);\n"
+          << "    cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);\n"
+          << "    cairo_select_font_face(cr, \"Sans\", CAIRO_FONT_SLANT_NORMAL,\n"
+          << "                           CAIRO_FONT_WEIGHT_BOLD);\n"
+          << "    cairo_set_font_size(cr, 12);\n"
+          << "    cairo_move_to(cr, 8, 16);\n"
+          << "    cairo_show_text(cr, me->title_.c_str());\n"
+          << "    cairo_set_source_rgba(cr, me->line_.red, me->line_.green,\n"
+          << "                          me->line_.blue, me->line_.alpha);\n"
+          << "    cairo_set_line_width(cr, 2);\n"
+          << "    double mid = a.height / 2.0 + 8,\n"
+          << "           amp = std::max(1.0, a.height / 2.0 - 24);\n"
+          << "    for (int px = 0; px < a.width; ++px) {\n"
+          << "        double t = (double)px / std::max(1, a.width) * 4 * G_PI;\n"
+          << "        double y = mid - std::sin(t) * amp;\n"
+          << "        if (px == 0) cairo_move_to(cr, px, y);\n"
+          << "        else cairo_line_to(cr, px, y);\n"
+          << "    }\n"
+          << "    cairo_stroke(cr);\n";
+    }
+    o << "    return FALSE;\n}\n";
+    return o.str();
+}
+
 static const StubNames kWidgetStubs{"", "on_press", "on_release"};
 static const StubNames kRootStubs{"Root_001_", "on_Root_001_press",
                                   "on_Root_001_release"};
@@ -361,6 +590,8 @@ static std::string emit_widget_header(const Widget& w) {
           << "#include <memory>\n\n"
           << "#include \"drawings.h\"\n"
           << "#include \"indicators.h\"\n";
+    if (w.type == "Shape" || w.type == "Plot")
+        o << "#include <string>\n";
     o << "\n"
       << "class " << w.name << " {\n"
       << "public:\n";
@@ -429,6 +660,16 @@ static std::string emit_widget_header(const Widget& w) {
     }
     o << "\nprivate:\n"
       << "    GtkWidget* widget_ = nullptr;\n";
+    if (w.type == "Shape") {
+        o << "    int shape_ = 0;\n"
+          << "    GdkRGBA fill_{0.21, 0.51, 0.89, 1.0};\n"
+          << "    static gboolean on_draw(GtkWidget*, cairo_t*, gpointer);\n";
+    }
+    if (w.type == "Plot") {
+        o << "    std::string title_;\n"
+          << "    GdkRGBA line_{0.86, 0.0, 0.0, 1.0};\n"
+          << "    static gboolean on_draw(GtkWidget*, cairo_t*, gpointer);\n";
+    }
     if (w.type == "StockChart") {
         o << "    std::vector<Candle> candles_;\n"
           << "    std::vector<std::unique_ptr<fdi::Indicator>> "
@@ -1265,6 +1506,9 @@ static std::string emit_widget_cpp(const Widget& w) {
              "<cstdlib>\n#include <ctime>\n#include <fstream>\n"
           << "#include <limits>\n#include <sstream>\n#include "
              "<utility>\n#include <gdk/gdkkeysyms.h>\n";
+    if (t == "Shape" || t == "Plot")
+        o << "#include <algorithm>\n";
+    if (t == "Plot") o << "#include <cmath>\n";
     o << "\n";
 
     if (t == "Toplevel") {
@@ -1325,6 +1569,70 @@ static std::string emit_widget_cpp(const Widget& w) {
         } else if (t == "Menubutton") {
             creation = "    " + M + " = gtk_menu_button_new();\n";
             skip = {"label"};
+        } else if (t == "GroupBox") {
+            creation = "    " + M + " = gtk_frame_new(\"" +
+                       esc_c(label) + "\");\n";
+            skip = {"label"};
+        } else if (t == "Panel") {
+            creation = "    " + M + " = gtk_frame_new(\"" +
+                       esc_c(label) + "\");\n";
+            skip = {"label"};
+        } else if (t == "Image") {
+            std::string file = prop_or(w, "file", "");
+            creation = "    " + M +
+                       " = gtk_image_new_from_icon_name(\"image-missing\", "
+                       "GTK_ICON_SIZE_DIALOG);\n";
+            if (!file.empty())
+                creation +=
+                    "    if (g_file_test(\"" + esc_c(file) +
+                    "\", G_FILE_TEST_EXISTS))\n"
+                    "        gtk_image_set_from_file(GTK_IMAGE(" + M +
+                    "), \"" + esc_c(file) + "\");\n";
+            skip = {"file"};
+        } else if (t == "Notebook") {
+            creation = "    " + M + " = gtk_notebook_new();\n";
+            skip = {"pages"};
+        } else if (t == "StatusBar") {
+            creation = "    " + M + " = gtk_statusbar_new();\n";
+            skip = {"text"};
+        } else if (t == "ToolBar") {
+            creation = "    " + M + " = gtk_toolbar_new();\n";
+            skip = {"items"};
+        } else if (t == "MenuBar") {
+            creation = "    " + M + " = gtk_menu_bar_new();\n";
+            skip = {"menus"};
+        } else if (t == "SpinEdit") {
+            creation = "    " + M +
+                       " = gtk_spin_button_new_with_range(" +
+                       prop_or(w, "minimum", "0") + ", " +
+                       prop_or(w, "maximum", "100") + ", " +
+                       prop_or(w, "step", "1") + ");\n";
+            skip = {"minimum", "maximum", "step"};
+        } else if (t == "TrackBar") {
+            std::string orient =
+                prop_or(w, "orientation", "0") == "1"
+                    ? "GTK_ORIENTATION_VERTICAL"
+                    : "GTK_ORIENTATION_HORIZONTAL";
+            creation = "    " + M + " = gtk_scale_new_with_range(" + orient +
+                       ", " + prop_or(w, "minimum", "0") + ", " +
+                       prop_or(w, "maximum", "100") + ", " +
+                       prop_or(w, "step", "1") + ");\n";
+            skip = {"minimum", "maximum", "step"};
+        } else if (t == "ProgressBar") {
+            creation = "    " + M + " = gtk_progress_bar_new();\n";
+        } else if (t == "ColorBox") {
+            creation = "    " + M + " = gtk_color_button_new();\n";
+            skip = {"color"};
+        } else if (t == "Splitter") {
+            std::string orient =
+                prop_or(w, "orientation", "0") == "1"
+                    ? "GTK_ORIENTATION_VERTICAL"
+                    : "GTK_ORIENTATION_HORIZONTAL";
+            creation = "    " + M + " = gtk_paned_new(" + orient + ");\n"
+                       "    gtk_paned_pack1(GTK_PANED(" + M +
+                       "), gtk_label_new(\"Pane 1\"), TRUE, FALSE);\n"
+                       "    gtk_paned_pack2(GTK_PANED(" + M +
+                       "), gtk_label_new(\"Pane 2\"), TRUE, FALSE);\n";
         } else if (t == "Scale") {
             creation = M +
                        " = gtk_scale_new_with_range("
@@ -1336,8 +1644,44 @@ static std::string emit_widget_cpp(const Widget& w) {
                        fmt_double(prop_or(w, "value", "0")) +
                        ", 0, 100, 1, 10, 10));\n";
             skip = {"value"};
+        } else if (t == "Shape" || t == "Plot") {
+            creation =
+                "    GtkWidget* frame = gtk_frame_new(nullptr);\n"
+                "    gtk_frame_set_shadow_type(GTK_FRAME(frame), "
+                "GTK_SHADOW_IN);\n"
+                "    " + M + " = gtk_drawing_area_new();\n"
+                "    gtk_container_add(GTK_CONTAINER(frame), " + M + ");\n";
+            place_target = "frame";
+            skip = {"shape", "fill-color", "title", "line-color"};
+        } else if (t == "ScrollBox") {
+            creation =
+                "    GtkWidget* sw = gtk_scrolled_window_new(nullptr, "
+                "nullptr);\n"
+                "    gtk_scrolled_window_set_shadow_type("
+                "GTK_SCROLLED_WINDOW(sw), GTK_SHADOW_IN);\n"
+                "    " + M + " = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);\n"
+                "    gtk_container_add(GTK_CONTAINER(sw), " + M + ");\n"
+                "    GtkWidget* scroll_label = gtk_label_new(\"" +
+                esc_c(label) + "\");\n"
+                "    gtk_container_add(GTK_CONTAINER(" + M +
+                "), scroll_label);\n";
+            place_target = "sw";
+            skip = {"label"};
+        } else if (t == "DateTimePicker") {
+            creation =
+                "    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, "
+                "0);\n"
+                "    " + M + " = gtk_calendar_new();\n"
+                "    gtk_container_add(GTK_CONTAINER(box), " + M + ");\n"
+                "    GtkWidget* date_entry = gtk_entry_new();\n"
+                "    gtk_entry_set_text(GTK_ENTRY(date_entry), \"" +
+                esc_c(prop_or(w, "date", "")) + "\");\n"
+                "    gtk_container_add(GTK_CONTAINER(box), date_entry);\n";
+            place_target = "box";
+            skip = {"date"};
         } else if (t == "Canvas" || t == "StockChart" || t == "Listbox" ||
-                   t == "Text" || t == "Spreadsheet") {
+                   t == "Text" || t == "Spreadsheet" || t == "Memo" ||
+                   t == "ListView" || t == "TreeView" || t == "StringGrid") {
             // Wrapper types: an outer container is placed on the canvas,
             // the member widget lives inside it.
             std::string outer_decl;
@@ -1365,9 +1709,18 @@ static std::string emit_widget_cpp(const Widget& w) {
             }
             else if (t == "Listbox") inner = "gtk_list_box_new()";
             else if (t == "Text") inner = "gtk_text_view_new()";
-            else {  // Spreadsheet
+            else if (t == "Spreadsheet") {
                 inner = "gtk_grid_new()";
                 skip = {"rows", "columns"};
+            } else if (t == "Memo") {
+                inner = "gtk_text_view_new()";
+                skip = {"text"};
+            } else if (t == "ListView" || t == "TreeView" ||
+                       t == "StringGrid") {
+                inner = "gtk_tree_view_new()";
+                if (t == "ListView") skip = {"columns", "items"};
+                if (t == "TreeView") skip = {"items"};
+                if (t == "StringGrid") skip = {"rows", "columns"};
             }
             creation = outer_decl + "    " + M + " = " + inner + ";\n" +
                        "    gtk_container_add(GTK_CONTAINER(" +
@@ -1419,6 +1772,57 @@ static std::string emit_widget_cpp(const Widget& w) {
               << "            gtk_grid_attach(GTK_GRID(" << M
               << "), cell, c, r, 1, 1);\n"
               << "        }\n";
+        } else if (t == "Memo") {
+            o << "    gtk_text_buffer_set_text(gtk_text_view_get_buffer("
+                 "GTK_TEXT_VIEW("
+              << M << ")), \"" << esc_c(prop_or(w, "text", "")) << "\", -1);\n";
+        } else if (t == "Notebook") {
+            o << emit_notebook_pages(w, M);
+        } else if (t == "StatusBar") {
+            o << "    gtk_statusbar_push(GTK_STATUSBAR(" << M
+              << "), gtk_statusbar_get_context_id(GTK_STATUSBAR(" << M
+              << "), \"design\"), \"" << esc_c(prop_or(w, "text", ""))
+              << "\");\n";
+        } else if (t == "ToolBar") {
+            o << emit_toolbar_items(w, M);
+        } else if (t == "MenuBar") {
+            o << emit_menubar_items(w, M);
+        } else if (t == "ListView") {
+            o << emit_listview_setup(w, M);
+        } else if (t == "TreeView") {
+            o << emit_treeview_setup(w, M);
+        } else if (t == "StringGrid") {
+            o << emit_stringgrid_setup(w, M);
+        } else if (t == "Shape") {
+            o << "    shape_ = " << prop_or(w, "shape", "0") << ";\n"
+              << "    gdk_rgba_parse(&fill_, \""
+              << esc_c(prop_or(w, "fill-color", "rgb(53,132,228)"))
+              << "\");\n"
+              << "    g_signal_connect(" << M
+              << ", \"draw\", G_CALLBACK(&" << w.name << "::on_draw), this);\n";
+        } else if (t == "Plot") {
+            o << "    title_ = \"" << esc_c(prop_or(w, "title", ""))
+              << "\";\n"
+              << "    gdk_rgba_parse(&line_, \""
+              << esc_c(prop_or(w, "line-color", "rgb(220,0,0)"))
+              << "\");\n"
+              << "    g_signal_connect(" << M
+              << ", \"draw\", G_CALLBACK(&" << w.name << "::on_draw), this);\n";
+        } else if (t == "DateTimePicker") {
+            int y = 0, m = 0, d = 0;
+            if (parse_ymd_gen(prop_or(w, "date", ""), y, m, d))
+                o << "    gtk_calendar_select_month(GTK_CALENDAR(" << M
+                  << "), " << m - 1 << ", " << y << ");\n"
+                  << "    gtk_calendar_select_day(GTK_CALENDAR(" << M
+                  << "), " << d << ");\n";
+        } else if (t == "ColorBox") {
+            o << "    {\n"
+              << "        GdkRGBA rgba;\n"
+              << "        gdk_rgba_parse(&rgba, \""
+              << esc_c(prop_or(w, "color", "rgb(53,132,228)")) << "\");\n"
+              << "        gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(" << M
+              << "), &rgba);\n"
+              << "    }\n";
         } else if (t == "StockChart") {
             o << "    gdk_rgba_parse(&up_, \""
               << esc_c(prop_or(w, "up-color", "rgb(0,200,0)")) << "\");\n"
@@ -1481,6 +1885,9 @@ static std::string emit_widget_cpp(const Widget& w) {
 
     if (w.type == "StockChart") {
         o << chart_methods(w.name);
+    }
+    if (w.type == "Shape" || w.type == "Plot") {
+        o << shape_plot_draw_methods(w);
     }
 
     o << "\n"

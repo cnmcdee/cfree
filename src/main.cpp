@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -398,6 +399,202 @@ static GtkWidget* toplevel_header(Item* it) {
     return first;
 }
 
+// ------------------------------------------------- Lazarus widget helpers
+// (design-time rebuilds and draws; the generator has its own emitters).
+
+// Split a spec on one separator, trimming each part, dropping empties.
+static std::vector<std::string> split_spec(const std::string& s, char sep) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || s[i] == sep) {
+            std::string one = trim(s.substr(start, i - start));
+            if (!one.empty()) out.push_back(one);
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
+// "YYYY-MM-DD" -> y/m/d, false on garbage.
+static bool parse_ymd(const std::string& s, int& y, int& m, int& d) {
+    if (std::sscanf(s.c_str(), "%d-%d-%d", &y, &m, &d) != 3) return false;
+    return y >= 1 && m >= 1 && m <= 12 && d >= 1 && d <= 31;
+}
+
+// Rebuild a Notebook's pages from its "pages" prop ("Tab 1|Tab 2").
+static void rebuild_notebook(Item* it) {
+    GtkNotebook* nb = GTK_NOTEBOOK(it->target);
+    while (gtk_notebook_get_n_pages(nb) > 0)
+        gtk_notebook_remove_page(nb, 0);
+    for (const std::string& page :
+         split_spec(prop_or_str(it, "pages", "Tab 1|Tab 2|Tab 3"), '|')) {
+        GtkWidget* body = gtk_label_new(page.c_str());
+        gtk_widget_show(body);
+        gtk_notebook_append_page(nb, body, gtk_label_new(page.c_str()));
+    }
+    gtk_widget_show_all(it->inner);
+}
+
+// Rebuild a ToolBar's buttons from its "items" prop ("New|Open|Save").
+static void rebuild_toolbar(Item* it) {
+    GtkToolbar* tb = GTK_TOOLBAR(it->target);
+    GList* kids = gtk_container_get_children(GTK_CONTAINER(tb));
+    for (GList* l = kids; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(kids);
+    for (const std::string& name :
+         split_spec(prop_or_str(it, "items", "New|Open|Save"), '|')) {
+        GtkToolItem* ti = gtk_tool_button_new(nullptr, name.c_str());
+        gtk_toolbar_insert(tb, ti, -1);
+    }
+    gtk_widget_show_all(it->inner);
+}
+
+// Rebuild a MenuBar's top-level items from its "menus" prop.
+static void rebuild_menubar(Item* it) {
+    GtkWidget* bar = it->target;
+    GList* kids = gtk_container_get_children(GTK_CONTAINER(bar));
+    for (GList* l = kids; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(kids);
+    for (const std::string& name :
+         split_spec(prop_or_str(it, "menus", "File|Edit|Help"), '|')) {
+        GtkWidget* mi = gtk_menu_item_new_with_label(name.c_str());
+        gtk_menu_shell_append(GTK_MENU_SHELL(bar), mi);
+    }
+    gtk_widget_show_all(it->inner);
+}
+
+// Drop every column of a TreeView (helper for the ListView/TreeView/
+// StringGrid rebuilds below).
+static void drop_tree_columns(GtkTreeView* tv) {
+    GList* old = gtk_tree_view_get_columns(tv);
+    for (GList* l = old; l; l = l->next)
+        gtk_tree_view_remove_column(tv, GTK_TREE_VIEW_COLUMN(l->data));
+    g_list_free(old);
+}
+
+// Rebuild a ListView's ListStore + columns. Columns: "Name|Value".
+// Items: rows separated by ';', cells by ','.
+static void rebuild_listview(Item* it) {
+    GtkTreeView* tv = GTK_TREE_VIEW(it->target);
+    std::vector<std::string> cols =
+        split_spec(prop_or_str(it, "columns", "Name|Value"), '|');
+    if (cols.empty()) cols.push_back("Name");
+    int n = (int)cols.size();
+    std::vector<GType> types(n, G_TYPE_STRING);
+    GtkListStore* store = gtk_list_store_newv(n, types.data());
+    for (const std::string& row : split_spec(
+             prop_or_str(it, "items", "Row 1,Value 1;Row 2,Value 2"), ';')) {
+        std::vector<std::string> cells = split_spec(row, ',');
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        for (int c = 0; c < n && c < (int)cells.size(); ++c)
+            gtk_list_store_set(store, &iter, c, cells[c].c_str(), -1);
+    }
+    drop_tree_columns(tv);
+    gtk_tree_view_set_model(tv, GTK_TREE_MODEL(store));
+    for (int c = 0; c < n; ++c) {
+        GtkCellRenderer* r = gtk_cell_renderer_text_new();
+        gtk_tree_view_append_column(
+            tv, gtk_tree_view_column_new_with_attributes(cols[c].c_str(), r,
+                                                         "text", c, nullptr));
+    }
+    g_object_unref(store);
+    gtk_widget_show_all(it->inner);
+}
+
+// Rebuild a TreeView's TreeStore from hierarchical "Root/Child;Other".
+static void rebuild_treeview(Item* it) {
+    GtkTreeView* tv = GTK_TREE_VIEW(it->target);
+    GtkTreeStore* store = gtk_tree_store_new(1, G_TYPE_STRING);
+    std::map<std::string, GtkTreeIter> nodes;
+    for (const std::string& path :
+         split_spec(prop_or_str(it, "items",
+                                "Root/Child 1;Root/Child 2;Other"),
+                    ';')) {
+        std::vector<std::string> parts = split_spec(path, '/');
+        std::string prefix;
+        GtkTreeIter* parent = nullptr;
+        for (const std::string& part : parts) {
+            if (!prefix.empty()) prefix += "/";
+            prefix += part;
+            auto found = nodes.find(prefix);
+            if (found != nodes.end()) {
+                parent = &found->second;
+                continue;
+            }
+            GtkTreeIter iter;
+            gtk_tree_store_append(store, &iter, parent);
+            gtk_tree_store_set(store, &iter, 0, part.c_str(), -1);
+            nodes[prefix] = iter;
+            parent = &nodes[prefix];
+        }
+    }
+    drop_tree_columns(tv);
+    gtk_tree_view_set_model(tv, GTK_TREE_MODEL(store));
+    GtkCellRenderer* r = gtk_cell_renderer_text_new();
+    gtk_tree_view_append_column(
+        tv, gtk_tree_view_column_new_with_attributes("Tree", r, "text", 0,
+                                                     nullptr));
+    g_object_unref(store);
+    gtk_widget_show_all(it->inner);
+}
+
+// Rebuild a StringGrid's ListStore: N text columns, R rows of "RrCc".
+static void rebuild_stringgrid(Item* it) {
+    GtkTreeView* tv = GTK_TREE_VIEW(it->target);
+    int rows = prop_int(it, "rows", 5);
+    int cols = prop_int(it, "columns", 4);
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    std::vector<GType> types(cols, G_TYPE_STRING);
+    GtkListStore* store = gtk_list_store_newv(cols, types.data());
+    for (int r = 0; r < rows; ++r) {
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        for (int c = 0; c < cols; ++c) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "R%dC%d", r + 1, c + 1);
+            gtk_list_store_set(store, &iter, c, buf, -1);
+        }
+    }
+    drop_tree_columns(tv);
+    gtk_tree_view_set_model(tv, GTK_TREE_MODEL(store));
+    for (int c = 0; c < cols; ++c) {
+        char title[32];
+        std::snprintf(title, sizeof title, "Col %d", c + 1);
+        GtkCellRenderer* r = gtk_cell_renderer_text_new();
+        gtk_tree_view_append_column(
+            tv, gtk_tree_view_column_new_with_attributes(title, r, "text", c,
+                                                         nullptr));
+    }
+    g_object_unref(store);
+    gtk_widget_show_all(it->inner);
+}
+
+// The label inside a ScrollBox's scrolled window (viewport -> box -> label).
+static GtkWidget* scrollbox_label(Item* it) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(it->inner));
+    if (child && GTK_IS_VIEWPORT(child))
+        child = gtk_bin_get_child(GTK_BIN(child));
+    if (!child) return nullptr;
+    GList* kids = gtk_container_get_children(GTK_CONTAINER(child));
+    GtkWidget* first = kids ? GTK_WIDGET(kids->data) : nullptr;
+    g_list_free(kids);
+    return first;
+}
+
+// The entry under a DateTimePicker's calendar (box: calendar, entry).
+static GtkWidget* datetime_entry(Item* it) {
+    GList* kids = gtk_container_get_children(GTK_CONTAINER(it->inner));
+    GtkWidget* second = nullptr;
+    if (kids && kids->next) second = GTK_WIDGET(kids->next->data);
+    g_list_free(kids);
+    return second;
+}
+
 // Push one stored (already canonical) value onto the live widget.
 static void apply_prop(Item* it, const PropDef& def, const std::string& value) {
     const char* name = def.name;
@@ -470,6 +667,120 @@ static void apply_prop(Item* it, const PropDef& def, const std::string& value) {
             build_spreadsheet_grid(grid, prop_int(it, "rows", 5),
                                    prop_int(it, "columns", 4));
         return;
+    }
+    // Lazarus-style widgets: properties consumed by a rebuild, a redraw,
+    // or a non-GObject setter — not plain g_object_set properties.
+    {
+        const std::string& ty = it->model.type;
+        if (ty == "Memo" && std::strcmp(name, "text") == 0) {
+            gtk_text_buffer_set_text(
+                gtk_text_view_get_buffer(GTK_TEXT_VIEW(it->target)),
+                value.c_str(), -1);
+            return;
+        }
+        if (ty == "Image" && std::strcmp(name, "file") == 0) {
+            if (!value.empty() &&
+                g_file_test(value.c_str(), G_FILE_TEST_EXISTS))
+                gtk_image_set_from_file(GTK_IMAGE(it->target), value.c_str());
+            else
+                gtk_image_set_from_icon_name(GTK_IMAGE(it->target),
+                                             "image-missing",
+                                             GTK_ICON_SIZE_DIALOG);
+            return;
+        }
+        if ((ty == "Shape" &&
+             (std::strcmp(name, "shape") == 0 ||
+              std::strcmp(name, "fill-color") == 0)) ||
+            (ty == "Plot" &&
+             (std::strcmp(name, "title") == 0 ||
+              std::strcmp(name, "line-color") == 0))) {
+            gtk_widget_queue_draw(it->target);
+            return;
+        }
+        if (ty == "Notebook" && std::strcmp(name, "pages") == 0) {
+            rebuild_notebook(it);
+            return;
+        }
+        if (ty == "ScrollBox" && std::strcmp(name, "label") == 0) {
+            GtkWidget* l = scrollbox_label(it);
+            if (l) gtk_label_set_text(GTK_LABEL(l), value.c_str());
+            return;
+        }
+        if (ty == "StatusBar" && std::strcmp(name, "text") == 0) {
+            gtk_statusbar_remove_all(GTK_STATUSBAR(it->target), 0);
+            if (!value.empty())
+                gtk_statusbar_push(GTK_STATUSBAR(it->target), 0,
+                                   value.c_str());
+            return;
+        }
+        if (ty == "ToolBar" && std::strcmp(name, "items") == 0) {
+            rebuild_toolbar(it);
+            return;
+        }
+        if (ty == "MenuBar" && std::strcmp(name, "menus") == 0) {
+            rebuild_menubar(it);
+            return;
+        }
+        if (ty == "SpinEdit" &&
+            (std::strcmp(name, "minimum") == 0 ||
+             std::strcmp(name, "maximum") == 0 ||
+             std::strcmp(name, "step") == 0)) {
+            int mn = std::min(prop_int(it, "minimum", 0),
+                              prop_int(it, "maximum", 100));
+            int mx = std::max(prop_int(it, "minimum", 0),
+                              prop_int(it, "maximum", 100));
+            gtk_spin_button_set_range(GTK_SPIN_BUTTON(it->target), mn, mx);
+            double step = prop_int(it, "step", 1);
+            gtk_spin_button_set_increments(GTK_SPIN_BUTTON(it->target), step,
+                                           step * 10);
+            return;
+        }
+        if (ty == "TrackBar" &&
+            (std::strcmp(name, "minimum") == 0 ||
+             std::strcmp(name, "maximum") == 0 ||
+             std::strcmp(name, "step") == 0)) {
+            int mn = std::min(prop_int(it, "minimum", 0),
+                              prop_int(it, "maximum", 100));
+            int mx = std::max(prop_int(it, "minimum", 0),
+                              prop_int(it, "maximum", 100));
+            gtk_range_set_range(GTK_RANGE(it->target), mn, mx);
+            double step = prop_int(it, "step", 1);
+            gtk_range_set_increments(GTK_RANGE(it->target), step, step * 10);
+            return;
+        }
+        if (ty == "DateTimePicker" && std::strcmp(name, "date") == 0) {
+            int y = 0, m = 0, d = 0;
+            if (parse_ymd(value, y, m, d)) {
+                gtk_calendar_select_month(GTK_CALENDAR(it->target), m - 1, y);
+                gtk_calendar_select_day(GTK_CALENDAR(it->target), d);
+            }
+            GtkWidget* e = datetime_entry(it);
+            if (e) gtk_entry_set_text(GTK_ENTRY(e), value.c_str());
+            return;
+        }
+        if (ty == "ColorBox" && std::strcmp(name, "color") == 0) {
+            GdkRGBA rgba;
+            if (gdk_rgba_parse(&rgba, value.c_str()))
+                gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(it->target),
+                                           &rgba);
+            return;
+        }
+        if (ty == "ListView" &&
+            (std::strcmp(name, "columns") == 0 ||
+             std::strcmp(name, "items") == 0)) {
+            rebuild_listview(it);
+            return;
+        }
+        if (ty == "TreeView" && std::strcmp(name, "items") == 0) {
+            rebuild_treeview(it);
+            return;
+        }
+        if (ty == "StringGrid" &&
+            (std::strcmp(name, "rows") == 0 ||
+             std::strcmp(name, "columns") == 0)) {
+            rebuild_stringgrid(it);
+            return;
+        }
     }
     GObject* o = G_OBJECT(it->target);
     switch (def.kind) {
@@ -969,6 +1280,75 @@ static gboolean on_chart_draw(GtkWidget*, cairo_t* cr, gpointer data) {
     return FALSE;
 }
 
+// Design-time draw for a Shape: rectangle / ellipse / line / triangle
+// in the fill-color property.
+static gboolean on_shape_draw(GtkWidget* w, cairo_t* cr, gpointer data) {
+    Item* it = (Item*)data;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    GdkRGBA fill{0.21, 0.51, 0.89, 1.0};
+    gdk_rgba_parse(&fill, prop_or_str(it, "fill-color", "").c_str());
+    cairo_set_source_rgba(cr, fill.red, fill.green, fill.blue, fill.alpha);
+    double x = 6, y = 6, ww = std::max(1.0, a.width - 12.0),
+           hh = std::max(1.0, a.height - 12.0);
+    switch (prop_int(it, "shape", 0)) {
+        case 1:  // ellipse
+            cairo_save(cr);
+            cairo_translate(cr, x + ww / 2, y + hh / 2);
+            cairo_scale(cr, ww / 2, hh / 2);
+            cairo_arc(cr, 0, 0, 1, 0, 2 * G_PI);
+            cairo_restore(cr);
+            cairo_fill(cr);
+            break;
+        case 2:  // line
+            cairo_set_line_width(cr, 3);
+            cairo_move_to(cr, x, y + hh);
+            cairo_line_to(cr, x + ww, y);
+            cairo_stroke(cr);
+            break;
+        case 3:  // triangle
+            cairo_move_to(cr, x + ww / 2, y);
+            cairo_line_to(cr, x + ww, y + hh);
+            cairo_line_to(cr, x, y + hh);
+            cairo_close_path(cr);
+            cairo_fill(cr);
+            break;
+        default:  // rectangle
+            cairo_rectangle(cr, x, y, ww, hh);
+            cairo_fill(cr);
+            break;
+    }
+    return FALSE;
+}
+
+// Design-time draw for a Plot: title + a sine wave in the line-color.
+static gboolean on_plot_draw(GtkWidget* w, cairo_t* cr, gpointer data) {
+    Item* it = (Item*)data;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_paint(cr);
+    cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 12);
+    cairo_move_to(cr, 8, 16);
+    cairo_show_text(cr, prop_or_str(it, "title", it->model.name).c_str());
+    GdkRGBA line{0.86, 0.0, 0.0, 1.0};
+    gdk_rgba_parse(&line, prop_or_str(it, "line-color", "").c_str());
+    cairo_set_source_rgba(cr, line.red, line.green, line.blue, line.alpha);
+    cairo_set_line_width(cr, 2);
+    double mid = a.height / 2.0 + 8, amp = std::max(1.0, a.height / 2.0 - 24);
+    for (int px = 0; px < a.width; ++px) {
+        double t = (double)px / std::max(1, a.width) * 4 * G_PI;
+        double y = mid - std::sin(t) * amp;
+        if (px == 0) cairo_move_to(cr, px, y);
+        else cairo_line_to(cr, px, y);
+    }
+    cairo_stroke(cr);
+    return FALSE;
+}
+
 // ------------------------------------------------------- widget factory
 
 // Create the real GTK widget for a palette type, in its design-time dress.
@@ -1062,21 +1442,126 @@ static GtkWidget* create_inner(const TypeInfo& t, const std::string& name) {
         gtk_container_add(GTK_CONTAINER(sw), grid);
         return sw;
     }
+    if (key == "Memo") {
+        GtkWidget* sw = gtk_scrolled_window_new(nullptr, nullptr);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                       GTK_POLICY_AUTOMATIC,
+                                       GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw),
+                                            GTK_SHADOW_IN);
+        GtkWidget* tv = gtk_text_view_new();
+        gtk_text_buffer_set_text(
+            gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), name.c_str(), -1);
+        gtk_container_add(GTK_CONTAINER(sw), tv);
+        return sw;
+    }
+    if (key == "GroupBox") return gtk_frame_new(name.c_str());
+    if (key == "Panel") return gtk_frame_new(nullptr);
+    if (key == "Image")
+        return gtk_image_new_from_icon_name("image-missing",
+                                            GTK_ICON_SIZE_DIALOG);
+    if (key == "Shape" || key == "Plot") {
+        GtkWidget* f = gtk_frame_new(nullptr);
+        gtk_frame_set_shadow_type(GTK_FRAME(f), GTK_SHADOW_IN);
+        gtk_container_add(GTK_CONTAINER(f), gtk_drawing_area_new());
+        return f;
+    }
+    if (key == "Notebook") return gtk_notebook_new();
+    if (key == "ScrollBox") {
+        GtkWidget* sw = gtk_scrolled_window_new(nullptr, nullptr);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                       GTK_POLICY_AUTOMATIC,
+                                       GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw),
+                                            GTK_SHADOW_IN);
+        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_box_pack_start(GTK_BOX(box), gtk_label_new(name.c_str()), FALSE,
+                           FALSE, 4);
+        gtk_container_add(GTK_CONTAINER(sw), box);
+        return sw;
+    }
+    if (key == "Splitter") {
+        GtkWidget* p = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+        gtk_paned_pack1(GTK_PANED(p), gtk_label_new("Pane 1"), TRUE, FALSE);
+        gtk_paned_pack2(GTK_PANED(p), gtk_label_new("Pane 2"), TRUE, FALSE);
+        return p;
+    }
+    if (key == "StatusBar") {
+        GtkWidget* s = gtk_statusbar_new();
+        gtk_statusbar_push(GTK_STATUSBAR(s), 0, "Ready");
+        return s;
+    }
+    if (key == "ToolBar") {
+        GtkWidget* tb = gtk_toolbar_new();
+        const char* names[] = {"New", "Open", "Save"};
+        for (const char* n : names) {
+            GtkToolItem* ti = gtk_tool_button_new(nullptr, n);
+            gtk_toolbar_insert(GTK_TOOLBAR(tb), ti, -1);
+        }
+        return tb;
+    }
+    if (key == "MenuBar") {
+        GtkWidget* bar = gtk_menu_bar_new();
+        const char* names[] = {"File", "Edit", "Help"};
+        for (const char* n : names) {
+            GtkWidget* mi = gtk_menu_item_new_with_label(n);
+            gtk_menu_shell_append(GTK_MENU_SHELL(bar), mi);
+        }
+        return bar;
+    }
+    if (key == "SpinEdit")
+        return gtk_spin_button_new_with_range(0, 100, 1);
+    if (key == "TrackBar")
+        return gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+    if (key == "ProgressBar") return gtk_progress_bar_new();
+    if (key == "DateTimePicker") {
+        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        GtkWidget* cal = gtk_calendar_new();
+        GtkWidget* e = gtk_entry_new();
+        gtk_entry_set_placeholder_text(GTK_ENTRY(e), "YYYY-MM-DD");
+        gtk_box_pack_start(GTK_BOX(box), cal, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(box), e, FALSE, FALSE, 0);
+        return box;
+    }
+    if (key == "ColorBox") {
+        GdkRGBA rgba{0.21, 0.51, 0.89, 1.0};
+        return gtk_color_button_new_with_rgba(&rgba);
+    }
+    if (key == "ListView" || key == "TreeView" || key == "StringGrid") {
+        GtkWidget* sw = gtk_scrolled_window_new(nullptr, nullptr);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                       GTK_POLICY_AUTOMATIC,
+                                       GTK_POLICY_AUTOMATIC);
+        gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw),
+                                            GTK_SHADOW_IN);
+        GtkWidget* tv = gtk_tree_view_new();
+        gtk_container_add(GTK_CONTAINER(sw), tv);
+        return sw;
+    }
     return gtk_label_new(name.c_str());  // fallback
 }
 
 // The widget that receives properties: unwrap scrolled wrappers.
 static GtkWidget* prop_target(const std::string& type, GtkWidget* inner) {
-    if (type == "Listbox" || type == "Text") {
+    if (type == "Listbox" || type == "Text" || type == "Memo" ||
+        type == "ListView" || type == "TreeView" || type == "StringGrid") {
         GtkWidget* child =
             gtk_bin_get_child(GTK_BIN(inner));  // viewport or direct child
         if (child && GTK_IS_VIEWPORT(child))
             child = gtk_bin_get_child(GTK_BIN(child));
         return child ? child : inner;
     }
-    if (type == "Canvas" || type == "StockChart") {
+    if (type == "Canvas" || type == "StockChart" || type == "Shape" ||
+        type == "Plot") {
         GtkWidget* child = gtk_bin_get_child(GTK_BIN(inner));
         return child ? child : inner;
+    }
+    if (type == "DateTimePicker") {
+        // The box holds calendar first, then the date entry.
+        GList* kids = gtk_container_get_children(GTK_CONTAINER(inner));
+        GtkWidget* first = kids ? GTK_WIDGET(kids->data) : nullptr;
+        g_list_free(kids);
+        return first ? first : inner;
     }
     return inner;
 }
@@ -1416,6 +1901,12 @@ static Item* create_item(const TypeInfo& t, const std::string& name, int x,
         gtk_widget_add_events(it->target, GDK_SCROLL_MASK);
         g_signal_connect(it->target, "scroll-event",
                          G_CALLBACK(on_chart_scroll), it);
+    }
+    if (std::strcmp(t.key, "Shape") == 0) {
+        g_signal_connect(it->target, "draw", G_CALLBACK(on_shape_draw), it);
+    }
+    if (std::strcmp(t.key, "Plot") == 0) {
+        g_signal_connect(it->target, "draw", G_CALLBACK(on_plot_draw), it);
     }
     g_items.push_back(it);
     return it;
@@ -2339,6 +2830,161 @@ static gboolean selftest_step(gpointer) {
                   std::string::npos);
             g_free(chart_h);
         }
+    }
+
+    // Phase 7: Lazarus-style widgets — place, edit a key property,
+    // drag/delete, and generate code that names the right GTK calls.
+    {
+        std::string err;
+        auto read_file = [](const std::string& path) {
+            gchar* t = nullptr;
+            if (!g_file_get_contents(path.c_str(), &t, nullptr, nullptr) ||
+                !t)
+                return std::string();
+            std::string s = t;
+            g_free(t);
+            return s;
+        };
+        auto tree_rows = [](GtkWidget* tv) {
+            GtkTreeModel* m = gtk_tree_view_get_model(GTK_TREE_VIEW(tv));
+            return m ? gtk_tree_model_iter_n_children(m, nullptr) : -1;
+        };
+        const char* types7[] = {"Memo",       "GroupBox",   "Panel",
+                                "Image",      "Shape",      "Notebook",
+                                "ScrollBox",  "Splitter",   "StatusBar",
+                                "ToolBar",    "MenuBar",    "SpinEdit",
+                                "TrackBar",   "ProgressBar", "DateTimePicker",
+                                "ColorBox",   "ListView",   "TreeView",
+                                "StringGrid", "Plot"};
+        std::map<std::string, Item*> placed;
+        for (const char* ty : types7) {
+            Item* it = add_widget(ty);
+            check(it != nullptr);
+            if (it) placed[ty] = it;
+        }
+        check(g_items.size() == 9 + 20);  // 9 carried over + 20 new
+        // Drag + delete on a new widget.
+        Item* nb0 = placed["Notebook"];
+        check(nb0 != nullptr);
+        move_item(nb0, 300, 200);
+        check(nb0->model.x == 300 && nb0->model.y == 200);
+        Item* tmp = add_widget("Shape");
+        check(tmp != nullptr);
+        delete_item(tmp);
+        check(g_items.size() == 9 + 20);
+        // Key property edits (live where cheap to observe).
+        check(set_prop(placed["Memo"], "text", "Hello memo", err));
+        {
+            GtkTextBuffer* b = gtk_text_view_get_buffer(
+                GTK_TEXT_VIEW(placed["Memo"]->target));
+            GtkTextIter s, e;
+            gtk_text_buffer_get_bounds(b, &s, &e);
+            gchar* txt = gtk_text_buffer_get_text(b, &s, &e, FALSE);
+            check(txt && std::strcmp(txt, "Hello memo") == 0);
+            g_free(txt);
+        }
+        check(set_prop(placed["GroupBox"], "label", "Options", err));
+        check(std::strcmp(gtk_frame_get_label(
+                              GTK_FRAME(placed["GroupBox"]->target)),
+                          "Options") == 0);
+        check(set_prop(placed["Panel"], "label", "Panel A", err));
+        check(placed["Panel"]->model.props["label"] == "Panel A");
+        check(set_prop(placed["Image"], "file", "chart_pro_1024x768.png",
+                       err));
+        check(placed["Image"]->model.props["file"] ==
+              "chart_pro_1024x768.png");
+        check(set_prop(placed["Shape"], "shape", "Ellipse", err));
+        check(placed["Shape"]->model.props["shape"] == "1");
+        check(set_prop(placed["Shape"], "fill-color", "#ff0000", err));
+        check(placed["Shape"]->model.props["fill-color"] == "rgb(255,0,0)");
+        check(set_prop(placed["Notebook"], "pages", "One|Two", err));
+        check(gtk_notebook_get_n_pages(
+                  GTK_NOTEBOOK(placed["Notebook"]->target)) == 2);
+        check(set_prop(placed["ScrollBox"], "label", "Scroll me", err));
+        check(placed["ScrollBox"]->model.props["label"] == "Scroll me");
+        check(set_prop(placed["Splitter"], "position", "150", err));
+        check(placed["Splitter"]->model.props["position"] == "150");
+        check(set_prop(placed["Splitter"], "orientation", "Vertical", err));
+        check(placed["Splitter"]->model.props["orientation"] == "1");
+        check(set_prop(placed["StatusBar"], "text", "All good", err));
+        check(placed["StatusBar"]->model.props["text"] == "All good");
+        check(set_prop(placed["ToolBar"], "items", "Cut|Copy|Paste", err));
+        check(placed["ToolBar"]->model.props["items"] == "Cut|Copy|Paste");
+        check(set_prop(placed["MenuBar"], "menus", "File|Tools", err));
+        check(placed["MenuBar"]->model.props["menus"] == "File|Tools");
+        check(set_prop(placed["SpinEdit"], "minimum", "0", err));
+        check(set_prop(placed["SpinEdit"], "maximum", "50", err));
+        check(set_prop(placed["SpinEdit"], "step", "5", err));
+        check(set_prop(placed["SpinEdit"], "value", "42", err));
+        check(gtk_spin_button_get_value(
+                  GTK_SPIN_BUTTON(placed["SpinEdit"]->target)) == 42.0);
+        check(set_prop(placed["TrackBar"], "value", "70", err));
+        check(gtk_range_get_value(
+                  GTK_RANGE(placed["TrackBar"]->target)) == 70.0);
+        check(set_prop(placed["TrackBar"], "orientation", "Vertical", err));
+        check(placed["TrackBar"]->model.props["orientation"] == "1");
+        check(set_prop(placed["ProgressBar"], "fraction", "0.5", err));
+        check(gtk_progress_bar_get_fraction(
+                  GTK_PROGRESS_BAR(placed["ProgressBar"]->target)) == 0.5);
+        check(set_prop(placed["DateTimePicker"], "date", "2026-11-25", err));
+        {
+            guint y = 0, m = 0, d = 0;
+            gtk_calendar_get_date(
+                GTK_CALENDAR(placed["DateTimePicker"]->target), &y, &m, &d);
+            check(y == 2026 && m == 10 && d == 25);
+        }
+        check(set_prop(placed["ColorBox"], "color", "#00ff00", err));
+        check(placed["ColorBox"]->model.props["color"] == "rgb(0,255,0)");
+        check(set_prop(placed["ListView"], "columns", "A|B", err));
+        check(set_prop(placed["ListView"], "items", "x,1;y,2", err));
+        check(tree_rows(placed["ListView"]->target) == 2);
+        check(set_prop(placed["TreeView"], "items", "Root/Leaf;Other", err));
+        check(tree_rows(placed["TreeView"]->target) == 2);
+        check(set_prop(placed["StringGrid"], "rows", "3", err));
+        check(set_prop(placed["StringGrid"], "columns", "2", err));
+        check(tree_rows(placed["StringGrid"]->target) == 3);
+        check(set_prop(placed["Plot"], "title", "Sine", err));
+        check(placed["Plot"]->model.props["title"] == "Sine");
+        check(set_prop(placed["Plot"], "line-color", "#0000ff", err));
+        check(placed["Plot"]->model.props["line-color"] == "rgb(0,0,255)");
+        // Generate the whole canvas and check each new widget's code.
+        Project snap7 = snapshot_project();
+        GenResult gr7 = generate_project(snap7, snap7.widgets,
+                                         "/tmp/fdesigner_gen_test7");
+        check(gr7.ok);
+        std::map<std::string, const char*> markers = {
+            {"Memo_001", "gtk_text_view_new"},
+            {"GroupBox_001", "gtk_frame_new"},
+            {"Panel_001", "gtk_frame_new"},
+            {"Image_001", "gtk_image_new_from_icon_name"},
+            {"Shape_001", "cairo_rectangle"},
+            {"Notebook_001", "gtk_notebook_append_page"},
+            {"ScrollBox_001", "gtk_scrolled_window_new"},
+            {"Splitter_001", "gtk_paned_new"},
+            {"StatusBar_001", "gtk_statusbar_push"},
+            {"ToolBar_001", "gtk_tool_button_new"},
+            {"MenuBar_001", "gtk_menu_bar_new"},
+            {"SpinEdit_001", "gtk_spin_button_new_with_range"},
+            {"TrackBar_001", "gtk_scale_new_with_range"},
+            {"ProgressBar_001", "gtk_progress_bar_new"},
+            {"DateTimePicker_001", "gtk_calendar_new"},
+            {"ColorBox_001", "gtk_color_button_new"},
+            {"ListView_001", "gtk_list_store_new"},
+            {"TreeView_001", "gtk_tree_store_new"},
+            {"StringGrid_001", "gtk_list_store_new"},
+            {"Plot_001", "sin("},
+        };
+        for (const auto& [name, marker] : markers) {
+            std::string code =
+                read_file("/tmp/fdesigner_gen_test7/" + name + ".cpp");
+            check(!code.empty() &&
+                  code.find(marker) != std::string::npos);
+        }
+        check(read_file("/tmp/fdesigner_gen_test7/Shape_001.cpp")
+                  .find("Shape_001::on_draw") != std::string::npos);
+        check(read_file("/tmp/fdesigner_gen_test7/Plot_001.cpp")
+                  .find("Plot_001::on_draw") != std::string::npos);
+        std::printf("GENERATED7 /tmp/fdesigner_gen_test7\n");
     }
 
     // Debugger backend: settings round-trip, breakpoint-location

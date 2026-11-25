@@ -56,6 +56,27 @@ inline const TypeInfo kTypes[] = {
     {"Toplevel",    "pal_toplevel",    300, 200, true },
     {"Spreadsheet", "pal_spreadsheet", 320, 180, true },
     {"StockChart",  "pal_stockchart",  320, 200, true },
+    // Lazarus-style widgets (Lazarus palette -> GTK 3 equivalent).
+    {"Memo",          "pal_memo",          220, 120, true },
+    {"GroupBox",      "pal_groupbox",      200, 120, true },
+    {"Panel",         "pal_panel",         200, 120, true },
+    {"Image",         "pal_image",         160, 120, true },
+    {"Shape",         "pal_shape",         160, 120, true },
+    {"Notebook",      "pal_notebook",      320, 200, true },
+    {"ScrollBox",     "pal_scrollbox",     240, 160, true },
+    {"Splitter",      "pal_splitter",      280, 160, true },
+    {"StatusBar",     "pal_statusbar",     320,  24, true },
+    {"ToolBar",       "pal_toolbar",       320,  36, true },
+    {"MenuBar",       "pal_menubar",       320,  28, true },
+    {"SpinEdit",      "pal_spinedit",      120,  28, true },
+    {"TrackBar",      "pal_trackbar",      160,  28, true },
+    {"ProgressBar",   "pal_progressbar",   200,  24, true },
+    {"DateTimePicker","pal_datetimepicker",240, 200, true },
+    {"ColorBox",      "pal_colorbox",      120,  28, true },
+    {"ListView",      "pal_listview",      240, 140, true },
+    {"TreeView",      "pal_treeview",      240, 140, true },
+    {"StringGrid",    "pal_stringgrid",    280, 160, true },
+    {"Plot",          "pal_plot",          280, 180, true },
 };
 
 inline const TypeInfo* find_type(const std::string& key) {

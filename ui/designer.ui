@@ -259,6 +259,154 @@
                         <property name="visible">True</property>
                       </object>
                     </child>
+                    <child>
+                      <object class="GtkLabel" id="pal_section_lazarus">
+                        <property name="label">&lt;b&gt;Lazarus — Basic&lt;/b&gt;</property>
+                        <property name="use_markup">True</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_memo">
+                        <property name="label">Memo</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_groupbox">
+                        <property name="label">GroupBox</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_panel">
+                        <property name="label">Panel</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_image">
+                        <property name="label">Image</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_shape">
+                        <property name="label">Shape</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="pal_section_containers">
+                        <property name="label">&lt;b&gt;Containers&lt;/b&gt;</property>
+                        <property name="use_markup">True</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_notebook">
+                        <property name="label">Notebook</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_scrollbox">
+                        <property name="label">ScrollBox</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_splitter">
+                        <property name="label">Splitter</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_statusbar">
+                        <property name="label">StatusBar</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_toolbar">
+                        <property name="label">ToolBar</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_menubar">
+                        <property name="label">MenuBar</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="pal_section_input">
+                        <property name="label">&lt;b&gt;Input&lt;/b&gt;</property>
+                        <property name="use_markup">True</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_spinedit">
+                        <property name="label">SpinEdit</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_trackbar">
+                        <property name="label">TrackBar</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_progressbar">
+                        <property name="label">ProgressBar</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_datetimepicker">
+                        <property name="label">DateTimePicker</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_colorbox">
+                        <property name="label">ColorBox</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="pal_section_data">
+                        <property name="label">&lt;b&gt;Data / Display&lt;/b&gt;</property>
+                        <property name="use_markup">True</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_listview">
+                        <property name="label">ListView</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_treeview">
+                        <property name="label">TreeView</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_stringgrid">
+                        <property name="label">StringGrid</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton" id="pal_plot">
+                        <property name="label">Plot</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
                   </object>
                 </child>
               </object>
