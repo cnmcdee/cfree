@@ -184,6 +184,8 @@ struct Item {
 static Project g_project;
 static GtkWidget* g_window = nullptr;
 static GtkWidget* g_palette_window = nullptr;  // top-level palette window
+static GtkWidget* g_palette_scroll = nullptr;  // its GtkScrolledWindow
+static int g_palette_icons_attached = 0;  // palette buttons given a glyph
 static GtkWidget* g_palette_menu_item = nullptr;  // View -> Widget Palette
 static GtkWidget* g_canvas = nullptr;      // GtkFixed
 static GtkWidget* g_viewport = nullptr;    // canvas parent (window background)
@@ -2410,6 +2412,54 @@ static void on_palette_clicked(GtkButton*, gpointer data) {
     add_widget((const char*)data);
 }
 
+// Attach the 16x16 glyph (icons/<Key>.png) to the left of each palette
+// button's label. The button keeps its clicked handler; only its child
+// changes, from a bare label to an hbox holding the image + the same label.
+// The icon path uses the same lookup as designer.ui: icons/ first, then
+// ../icons/. A missing or unreadable icon leaves the button text-only;
+// g_palette_icons_attached counts the buttons that got one (36 expected).
+static void palette_attach_icons(GtkBuilder* builder) {
+    for (const TypeInfo& t : kTypes) {
+        GObject* b = gtk_builder_get_object(builder, t.palette_id);
+        if (!b) continue;
+        std::string path;
+        for (const std::string& cand :
+             {std::string("icons/") + t.key + ".png",
+              std::string("../icons/") + t.key + ".png"}) {
+            if (g_file_test(cand.c_str(), G_FILE_TEST_IS_REGULAR)) {
+                path = cand;
+                break;
+            }
+        }
+        if (path.empty()) continue;
+        GError* err = nullptr;
+        GdkPixbuf* px = gdk_pixbuf_new_from_file(path.c_str(), &err);
+        if (!px) {
+            if (err) g_error_free(err);
+            continue;
+        }
+        GList* kids = gtk_container_get_children(GTK_CONTAINER(b));
+        GtkWidget* label = kids ? GTK_WIDGET(kids->data) : nullptr;
+        if (!label) {
+            g_object_unref(px);
+            g_list_free(kids);
+            continue;
+        }
+        g_list_free(kids);
+        GtkWidget* img = gtk_image_new_from_pixbuf(px);
+        g_object_unref(px);
+        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        g_object_ref(label);
+        gtk_container_remove(GTK_CONTAINER(b), label);
+        gtk_container_add(GTK_CONTAINER(box), img);
+        gtk_container_add(GTK_CONTAINER(box), label);
+        g_object_unref(label);
+        gtk_container_add(GTK_CONTAINER(b), box);
+        gtk_widget_show_all(box);
+        ++g_palette_icons_attached;
+    }
+}
+
 // ------------------------------------------------------- palette window
 // The widget palette lives in its own top-level window ("FDesigner —
 // Widgets"), opened together with the designer. It is a plain top-level
@@ -4001,6 +4051,27 @@ static gboolean selftest_step(gpointer) {
               bsess2.breakpoints()[0].location == "foo.cpp:7");
     }
 
+    // Palette icons: every button carries its 16x16 glyph, and the
+    // palette still fits its 250-wide window with no scrolling in either
+    // direction (page size covers the whole content).
+    while (gtk_events_pending()) gtk_main_iteration();
+    check(g_palette_icons_attached == 36);
+    if (g_palette_window) {
+        gint pw = 0, ph = 0;
+        gtk_window_get_size(GTK_WINDOW(g_palette_window), &pw, &ph);
+        check(pw == 250 && ph == 780);
+    }
+    if (g_palette_scroll) {
+        GtkAdjustment* hadj = gtk_scrolled_window_get_hadjustment(
+            GTK_SCROLLED_WINDOW(g_palette_scroll));
+        GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(
+            GTK_SCROLLED_WINDOW(g_palette_scroll));
+        check(gtk_adjustment_get_page_size(hadj) >=
+              gtk_adjustment_get_upper(hadj));
+        check(gtk_adjustment_get_page_size(vadj) >=
+              gtk_adjustment_get_upper(vadj));
+    }
+
     std::printf("SELFTEST %s items=%zu\n", ok ? "PASS" : "FAIL",
                 g_items.size());
     std::fflush(stdout);
@@ -4064,6 +4135,9 @@ int main(int argc, char** argv) {
             g_signal_connect(b, "clicked", G_CALLBACK(on_palette_clicked),
                              (gpointer)t.key);
     }
+    g_palette_scroll =
+        GTK_WIDGET(gtk_builder_get_object(builder, "palette_scroll"));
+    palette_attach_icons(builder);
 
     // Clicking empty canvas deselects: the GtkFixed has no window of its
     // own, so empty-area presses land on its parent GtkViewport.
@@ -4221,15 +4295,19 @@ int main(int argc, char** argv) {
         // [palette-window] Tight Lazarus-style packing: small buttons,
         // minimal padding, no whitespace between rows. USER priority so
         // it wins over the application theme/font providers.
+        // The builder id is not the widget name (it stays "GtkWindow"), so
+        // set the name explicitly - the tight CSS below selects on it.
+        gtk_widget_set_name(g_palette_window, "palette_window");
         GtkCssProvider* pal_css = gtk_css_provider_new();
         gtk_css_provider_load_from_data(
             pal_css,
-            "#palette_window button { min-height: 20px; padding: 1px 4px; }"
-            "#palette_window button label { padding: 0px; }"
+            "#palette_window button { min-height: 20px; padding: 1px 2px; }"
+            "#palette_window button label { padding: 0px; font-size: 9pt; }"
+            "#palette_window button image { padding: 0px; }"
             "#palette_window label { padding: 0px; }",
             -1, nullptr);
-        gtk_style_context_add_provider(
-            gtk_widget_get_style_context(g_palette_window),
+        gtk_style_context_add_provider_for_screen(
+            gdk_screen_get_default(),
             GTK_STYLE_PROVIDER(pal_css),
             GTK_STYLE_PROVIDER_PRIORITY_USER);
         gtk_widget_show_all(g_palette_window);

@@ -119,7 +119,7 @@ if [ -n "$PAL" ] && [ -n "$MAIN" ]; then
     # First button (Button, left column, first grid row).
     xdotool mousemove $((PX + 62)) $((PY + 39)) click 1; sleep 0.7
     # Memo button (Lazarus — Basic, left column).
-    xdotool mousemove $((PX + 62)) $((PY + 350)) click 1; sleep 0.7
+    xdotool mousemove $((PX + 62)) $((PY + 269)) click 1; sleep 0.7
     import -window root -crop 500x220+${CX}+${CY} /tmp/palette_after.png
     DIFF=$(compare -metric AE -fuzz 5% /tmp/palette_before.png \
         /tmp/palette_after.png /tmp/palette_diff.png 2>&1 || true)
