@@ -1270,6 +1270,21 @@ bool GdbSession::load_breakpoints(const std::string& path) {
         if (parts.size() >= 5) b.ignore_count = std::atoi(parts[4].c_str());
         if (parts.size() >= 6) b.log_message = bps_unescape(parts[5]);
         if (parts.size() >= 7) b.group = bps_unescape(parts[6]);
+        // Split "file:line" into file/line so the code-view gutter can
+        // show persisted breakpoints (debugger_breakpoint_lines matches on
+        // file/line). Function-only locations ("compute") have neither.
+        size_t colon = b.location.rfind(':');
+        if (colon != std::string::npos &&
+            colon + 1 < b.location.size()) {
+            std::string tail = b.location.substr(colon + 1);
+            bool all_digits = !tail.empty();
+            for (char ch : tail)
+                if (!std::isdigit((unsigned char)ch)) all_digits = false;
+            if (all_digits) {
+                b.file = b.location.substr(0, colon);
+                b.line = std::atoi(tail.c_str());
+            }
+        }
         // A condition without an explicit kind is a conditional
         // breakpoint (also covers hand-edited files).
         if (b.kind == BpKind::Plain && !b.condition.empty())

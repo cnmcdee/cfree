@@ -678,10 +678,13 @@ static void console_tests() {
             const auto& b2 = sess2.breakpoints()[2];
             ok = b0.kind == BpKind::Conditional &&
                  b0.condition == "i == 2 || sum > 3" && b0.group == "loop" &&
+                 b0.file == src && b0.line == L_LOOP &&
                  b1.kind == BpKind::Logpoint &&
                  b1.log_message == "LOG i={i} | sum={sum}" &&
-                 b1.group == "trace" && b2.kind == BpKind::Plain &&
-                 b2.ignore_count == 3 && b2.location == "compute";
+                 b1.group == "trace" && b1.file == src &&
+                 b1.line == L_HELPER && b2.kind == BpKind::Plain &&
+                 b2.ignore_count == 3 && b2.location == "compute" &&
+                 b2.file.empty() && b2.line == 0;
         }
         // Old format: location|enabled, nothing else.
         {
@@ -693,8 +696,11 @@ static void console_tests() {
         ok = ok && sess3.breakpoints().size() == 2 &&
              sess3.breakpoints()[0].kind == BpKind::Plain &&
              sess3.breakpoints()[0].enabled &&
+             sess3.breakpoints()[0].file == src &&
+             sess3.breakpoints()[0].line == L_LOOP &&
              sess3.breakpoints()[1].kind == BpKind::Plain &&
-             !sess3.breakpoints()[1].enabled;
+             !sess3.breakpoints()[1].enabled &&
+             sess3.breakpoints()[1].file.empty();
         // A bad condition is rejected and leaves no breakpoint behind.
         {
             GdbSession s4;
