@@ -65,7 +65,12 @@ bool save_project_file(const std::string& path, const Project& p,
               << "\": \"" << json_escape(v) << "\"";
             first = false;
         }
-        o << (w.props.empty() ? "" : "\n      ") << "}\n"
+        o << (w.props.empty() ? "" : "\n      ") << "},\n"
+          << "      \"signals\": [";
+        for (size_t j = 0; j < w.signals.size(); ++j)
+            o << (j ? ", " : "") << "\"" << json_escape(w.signals[j])
+              << "\"";
+        o << "]\n"
           << "    }";
     }
     o << (p.widgets.empty() ? "" : "\n  ") << "]\n}\n";
@@ -349,6 +354,11 @@ bool load_project_file(const std::string& path, Project& out,
                 props && props->type == Json::Obj) {
                 for (const auto& [k, v] : props->obj)
                     if (v.type == Json::Str) w.props[k] = v.str;
+            }
+            if (const Json* sigs = jw.find("signals");
+                sigs && sigs->type == Json::Arr) {
+                for (const Json& s : sigs->arr)
+                    if (s.type == Json::Str) w.signals.push_back(s.str);
             }
             p.widgets.push_back(w);
         }

@@ -31,6 +31,7 @@
 
 #include "model.h"
 #include "props.h"
+#include "events.h"
 #include "drawings.h"
 #include "generator.h"
 #include "cmake_build.h"
@@ -214,8 +215,16 @@ struct PropBinding {
 struct PickBinding {
     GtkEntry* entry;
 };
+// One Events-pane check button: which widget and which GTK signal it
+// connects. (The signal string is copied — the EventDef table is static,
+// but the binding owns its copy for safety.)
+struct EventBinding {
+    Item* item;
+    std::string signal;
+};
 static std::vector<PropBinding*> g_prop_bindings;
 static std::vector<PickBinding*> g_pick_bindings;
+static std::vector<EventBinding*> g_event_bindings;
 
 // Bulk-parameter inputs
 static GtkWidget* g_bulk_param = nullptr;   // editable combo
@@ -1576,6 +1585,7 @@ static void on_spin_changed(GtkSpinButton*, gpointer which);
 static void on_delete_clicked(GtkButton*, gpointer);
 static void on_prop_entry_changed(GtkEntry*, gpointer binding);
 static void on_prop_bool_toggled(GtkToggleButton*, gpointer binding);
+static void on_event_toggled(GtkToggleButton*, gpointer binding);
 static void on_prop_spin_changed(GtkSpinButton*, gpointer binding);
 static void on_prop_enum_changed(GtkComboBoxText*, gpointer binding);
 static void on_prop_pick_clicked(GtkButton*, gpointer binding);
@@ -1591,8 +1601,10 @@ static void clear_props() {
     g_list_free(kids);
     for (PropBinding* b : g_prop_bindings) delete b;
     for (PickBinding* b : g_pick_bindings) delete b;
+    for (EventBinding* b : g_event_bindings) delete b;
     g_prop_bindings.clear();
     g_pick_bindings.clear();
+    g_event_bindings.clear();
     g_spin_x = g_spin_y = g_spin_w = g_spin_h = nullptr;
 }
 
@@ -1768,6 +1780,41 @@ static void refresh_props() {
     for (const PropDef& d : common_props()) defs.push_back(&d);
     for (const PropDef* d : defs)
         add_row(row++, d->name, make_prop_editor(g_selected, *d));
+
+    // Events: one check button per natural GTK signal of this type.
+    // Checked = connected: the generator emits a stub handler and a
+    // g_signal_connect for it. Types with no natural signal get an
+    // explicit note instead (see events.h — none left unexamined).
+    GtkWidget* ev_hdr = gtk_label_new("<b>Events</b>");
+    gtk_label_set_use_markup(GTK_LABEL(ev_hdr), TRUE);
+    gtk_widget_set_halign(ev_hdr, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(g_props_grid), ev_hdr, 0, row++, 2, 1);
+    const std::vector<EventDef>& evs = events_for(m.type);
+    if (evs.empty()) {
+        GtkWidget* note = gtk_label_new(no_events_note(m.type).c_str());
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_widget_set_halign(note, GTK_ALIGN_START);
+        gtk_grid_attach(GTK_GRID(g_props_grid), note, 0, row++, 2, 1);
+    }
+    for (const EventDef& d : evs) {
+        std::string text = std::string(d.signal) + "  →  " + d.handler +
+                           "()";
+        if (d.builtin) text += "  (always connected)";
+        GtkWidget* c = gtk_check_button_new_with_label(text.c_str());
+        bool on = d.builtin ||
+                  std::find(m.signals.begin(), m.signals.end(),
+                            d.signal) != m.signals.end();
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(c), on);
+        if (d.builtin) {
+            gtk_widget_set_sensitive(c, FALSE);
+        } else {
+            EventBinding* b = new EventBinding{g_selected, d.signal};
+            g_event_bindings.push_back(b);
+            g_signal_connect(c, "toggled", G_CALLBACK(on_event_toggled), b);
+        }
+        gtk_widget_set_halign(c, GTK_ALIGN_START);
+        gtk_grid_attach(GTK_GRID(g_props_grid), c, 0, row++, 2, 1);
+    }
 
     GtkWidget* del = gtk_button_new_with_label("Delete widget");
     g_signal_connect(del, "clicked", G_CALLBACK(on_delete_clicked), nullptr);
@@ -2056,6 +2103,18 @@ static void on_prop_bool_toggled(GtkToggleButton* t, gpointer binding) {
     std::string err;
     set_prop(b->item, b->def->name,
              gtk_toggle_button_get_active(t) ? "true" : "false", err);
+}
+
+// Events pane: connect/disconnect one GTK signal on the selected widget.
+// The generator emits a stub handler + g_signal_connect for each entry in
+// Widget.signals, so this checkbox is the whole UI for event wiring.
+static void on_event_toggled(GtkToggleButton* t, gpointer binding) {
+    if (g_syncing_props) return;
+    EventBinding* b = (EventBinding*)binding;
+    bool on = gtk_toggle_button_get_active(t) != 0;
+    if (set_widget_signal(b->item->model, b->signal, on))
+        status(b->item->model.name + ": signal \"" + b->signal + "\" " +
+               (on ? "connected" : "disconnected"));
 }
 
 static void on_prop_spin_changed(GtkSpinButton* s, gpointer binding) {
@@ -3173,6 +3232,131 @@ static gboolean selftest_step(gpointer) {
         check(read_file("/tmp/fdesigner_gen_test7/Plot_001.cpp")
                   .find("Plot_001::on_draw") != std::string::npos);
         std::printf("GENERATED7 /tmp/fdesigner_gen_test7\n");
+    }
+
+    // Phase 8: event handlers — connect every natural signal on every
+    // widget on the canvas, generate, and check the emitted code carries
+    // a stub handler + g_signal_connect for each; types with no natural
+    // signal get no event stubs; save/load keeps the connections.
+    {
+        auto read_file8 = [](const std::string& path) {
+            gchar* t = nullptr;
+            if (!g_file_get_contents(path.c_str(), &t, nullptr, nullptr) ||
+                !t)
+                return std::string();
+            std::string s = t;
+            g_free(t);
+            return s;
+        };
+        // The Events pane itself: ticking Button_001's "clicked" check
+        // button connects the signal through the real UI callback.
+        {
+            Item* b = nullptr;
+            for (Item* it : g_items)
+                if (it->model.name == "Button_001") b = it;
+            check(b != nullptr);
+            select_item(b);  // rebuilds the property pane
+            GtkWidget* clicked_btn = nullptr;
+            GList* kids =
+                gtk_container_get_children(GTK_CONTAINER(g_props_grid));
+            for (GList* p = kids; p; p = p->next) {
+                GtkWidget* ch = GTK_WIDGET(p->data);
+                if (GTK_IS_CHECK_BUTTON(ch)) {
+                    const char* lab = gtk_button_get_label(GTK_BUTTON(ch));
+                    if (lab &&
+                        std::string(lab).find("clicked") !=
+                            std::string::npos)
+                        clicked_btn = ch;
+                }
+            }
+            check(clicked_btn != nullptr);
+            if (clicked_btn) {
+                check(!gtk_toggle_button_get_active(
+                    GTK_TOGGLE_BUTTON(clicked_btn)));
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(clicked_btn),
+                                             TRUE);
+                check(std::find(b->model.signals.begin(),
+                                b->model.signals.end(),
+                                "clicked") != b->model.signals.end());
+            }
+            g_list_free(kids);
+        }
+        for (Item* it : g_items)
+            for (const EventDef& d : events_for(it->model.type))
+                if (!d.builtin)
+                    check(set_widget_signal(it->model, d.signal, true));
+        check(!set_widget_signal(g_items.front()->model, "bogus-signal",
+                                 true));
+        {
+            Widget scratch = g_items.front()->model;
+            check(set_widget_signal(scratch, "clicked", false));
+            check(std::find(scratch.signals.begin(), scratch.signals.end(),
+                            "clicked") == scratch.signals.end());
+        }
+        Project snap8 = snapshot_project();
+        check(snap8.widgets.size() == 29);
+        GenResult gr8 = generate_project(snap8, snap8.widgets,
+                                         "/tmp/fdesigner_gen_test8");
+        check(gr8.ok);
+        for (const Widget& w : snap8.widgets) {
+            std::string cpp =
+                read_file8("/tmp/fdesigner_gen_test8/" + w.name + ".cpp");
+            std::string hdr =
+                read_file8("/tmp/fdesigner_gen_test8/" + w.name + ".h");
+            check(!cpp.empty() && !hdr.empty());
+            const std::vector<EventDef>& evs = events_for(w.type);
+            if (evs.empty()) {
+                // No natural signal: no event stubs at all (the EVENT
+                // trace marker only appears in event handler stubs).
+                check(cpp.find("EVENT ") == std::string::npos);
+                continue;
+            }
+            for (const EventDef& d : evs) {
+                if (d.builtin) {
+                    check(cpp.find("\"draw\"") != std::string::npos);
+                    check(cpp.find("g_signal_connect") !=
+                          std::string::npos);
+                    continue;
+                }
+                check(cpp.find(std::string("\"") + d.signal + "\"") !=
+                      std::string::npos);
+                check(cpp.find("g_signal_connect") != std::string::npos);
+                check(cpp.find("EVENT " + w.name + " " + d.signal) !=
+                      std::string::npos);
+                if (d.kind == EventKind::ItemClicked) {
+                    check(cpp.find("on_clicked_") != std::string::npos);
+                    check(cpp.find("tb_cut") != std::string::npos);
+                    check(hdr.find("on_clicked_") != std::string::npos);
+                } else if (d.kind == EventKind::ItemActivate) {
+                    check(cpp.find("on_activate_") != std::string::npos);
+                    check(cpp.find("mb_file") != std::string::npos);
+                    check(hdr.find("on_activate_") != std::string::npos);
+                } else {
+                    check(cpp.find(w.name + "::" + d.handler) !=
+                          std::string::npos);
+                    check(hdr.find(d.handler) != std::string::npos);
+                }
+            }
+        }
+        // Save/load round-trip keeps the connections.
+        check(save_project_file("/tmp/fdesigner_test8.fdj", snap8, err));
+        clear_canvas();
+        check(g_items.empty());
+        Project loaded8;
+        check(load_project_file("/tmp/fdesigner_test8.fdj", loaded8, err));
+        load_into_canvas(loaded8);
+        check(g_items.size() == 29);
+        for (Item* it : g_items) {
+            if (it->model.name == "Button_001")
+                check(std::find(it->model.signals.begin(),
+                                it->model.signals.end(),
+                                "clicked") != it->model.signals.end());
+            if (it->model.name == "Entry_001")
+                check(it->model.signals.size() == 2);
+            if (it->model.type == "Label")
+                check(it->model.signals.empty());
+        }
+        std::printf("GENERATED8 /tmp/fdesigner_gen_test8\n");
     }
 
     // Debugger backend: settings round-trip, breakpoint-location

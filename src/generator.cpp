@@ -3,6 +3,7 @@
 
 #include "generator.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 
 #include "cmake_build.h"
 #include "drawings_embedded.h"
+#include "events.h"
 #include "indicators_embedded.h"
 #include "props.h"
 
@@ -296,6 +298,247 @@ static std::string connect_mouse(const std::string& cls,
     return o.str();
 }
 
+// ------------------------------------------------------- event handlers
+static std::vector<std::string> split_on(char sep,
+                                         const std::string& spec);
+// The connected signals of one widget (Widget.signals, validated against
+// the event table, de-duplicated). Builtin events (Shape/Plot/StockChart
+// draw) are already wired by the generator and are left out here so they
+// are never connected twice.
+static std::vector<const EventDef*> connected_events(const Widget& w) {
+    std::vector<const EventDef*> out;
+    std::set<std::string> seen;
+    for (const std::string& s : w.signals) {
+        const EventDef* d = find_event(w.type, s);
+        if (!d || d->builtin) continue;
+        if (!seen.insert(s).second) continue;
+        out.push_back(d);
+    }
+    return out;
+}
+
+// Identifier fragments for per-item handlers (ToolBar tool buttons,
+// MenuBar top-level items) from the widget's items/menus property.
+static std::vector<std::string> event_item_ids(const Widget& w) {
+    std::vector<std::string> out;
+    std::string spec;
+    if (w.type == "ToolBar")
+        spec = prop_or(w, "items", "New|Open|Save");
+    else if (w.type == "MenuBar")
+        spec = prop_or(w, "menus", "File|Edit|Help");
+    else
+        return out;
+    for (const std::string& name : split_on('|', spec))
+        out.push_back(menu_id_part(name));
+    return out;
+}
+
+static bool event_connected(const Widget& w, const char* signal) {
+    for (const std::string& s : w.signals)
+        if (s == signal) return true;
+    return false;
+}
+
+// One g_signal_connect line (4-space indent) for a plain event.
+static std::string event_connect_line(const Widget& w, const EventDef& d,
+                                      const std::string& target) {
+    std::ostringstream o;
+    std::string cb = std::string(d.handler) + "_cb";
+    switch (d.kind) {
+        case EventKind::BufferChanged:
+            o << "    g_signal_connect(gtk_text_view_get_buffer(GTK_TEXT_VIEW("
+              << target << ")), \"" << d.signal << "\", G_CALLBACK(&"
+              << w.name << "::" << cb << "), this);\n";
+            break;
+        case EventKind::Draw:
+            o << "    g_signal_connect(" << target << ", \"" << d.signal
+              << "\", G_CALLBACK(&" << w.name << "::" << d.handler
+              << "), this);\n";
+            break;
+        default:
+            o << "    g_signal_connect(" << target << ", \"" << d.signal
+              << "\", G_CALLBACK(&" << w.name << "::" << cb << "), this);\n";
+            break;
+    }
+    return o.str();
+}
+
+// All g_signal_connect lines for a widget's connected events (the
+// per-item and per-cell kinds are emitted where the items/cells are
+// created instead).
+static std::string event_connect_lines(const Widget& w,
+                                       const std::string& target) {
+    std::ostringstream o;
+    for (const EventDef* d : connected_events(w)) {
+        if (d->kind == EventKind::ItemClicked ||
+            d->kind == EventKind::ItemActivate ||
+            d->kind == EventKind::CellChanged)
+            continue;
+        o << event_connect_line(w, *d, target);
+    }
+    return o.str();
+}
+
+// Handler declarations for the widget class header.
+static void event_handler_decls(std::ostringstream& o, const Widget& w) {
+    std::vector<const EventDef*> evs = connected_events(w);
+    if (evs.empty()) return;
+    o << "\n    // Event handlers (connected signals — see events.h)\n";
+    for (const EventDef* d : evs) {
+        switch (d->kind) {
+            case EventKind::Simple:
+            case EventKind::BufferChanged:
+            case EventKind::CellChanged:
+                o << "    void " << d->handler << "();\n"
+                  << "    static void " << d->handler
+                  << "_cb(GtkWidget*, gpointer);\n";
+                break;
+            case EventKind::SwitchPage:
+                o << "    void " << d->handler << "(guint page);\n"
+                  << "    static void " << d->handler
+                  << "_cb(GtkNotebook*, GtkWidget*, guint, gpointer);\n";
+                break;
+            case EventKind::RowActivated:
+                o << "    void " << d->handler << "(GtkTreePath* path);\n"
+                  << "    static void " << d->handler
+                  << "_cb(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn*, "
+                     "gpointer);\n";
+                break;
+            case EventKind::RowSelected:
+                o << "    void " << d->handler << "();\n"
+                  << "    static void " << d->handler
+                  << "_cb(GtkListBox*, GtkListBoxRow*, gpointer);\n";
+                break;
+            case EventKind::DeleteEvent:
+                o << "    bool " << d->handler << "();\n"
+                  << "    static gboolean " << d->handler
+                  << "_cb(GtkWidget*, GdkEvent*, gpointer);\n";
+                break;
+            case EventKind::Draw:
+                o << "    static gboolean " << d->handler
+                  << "(GtkWidget*, cairo_t*, gpointer);\n";
+                break;
+            case EventKind::ItemClicked:
+                for (const std::string& id : event_item_ids(w))
+                    o << "    void " << d->handler << "_" << id << "();\n"
+                      << "    static void " << d->handler << "_" << id
+                      << "_cb(GtkToolButton*, gpointer);\n";
+                break;
+            case EventKind::ItemActivate:
+                for (const std::string& id : event_item_ids(w))
+                    o << "    void " << d->handler << "_" << id << "();\n"
+                      << "    static void " << d->handler << "_" << id
+                      << "_cb(GtkMenuItem*, gpointer);\n";
+                break;
+        }
+    }
+}
+
+// The trace line a stub prints under FDESIGNER_EVENT_TRACE (compiled
+// into generated apps only when the test harness defines the macro).
+static std::string event_trace(const Widget& w, const EventDef& d,
+                               const std::string& detail) {
+    std::string line = "#ifdef FDESIGNER_EVENT_TRACE\n"
+                       "    std::fprintf(stderr, \"EVENT " +
+                       w.name + " " + d.signal + detail + "\\n\");\n#endif\n";
+    return line;
+}
+
+// Handler definitions for the widget class .cpp: the member stub the
+// user fills in, plus the static trampoline GTK calls.
+static void event_handler_defs(std::ostringstream& o, const Widget& w) {
+    for (const EventDef* d : connected_events(w)) {
+        std::string cb = std::string(d->handler) + "_cb";
+        switch (d->kind) {
+            case EventKind::Simple:
+            case EventKind::BufferChanged:
+            case EventKind::CellChanged:
+                o << "\nvoid " << w.name << "::" << d->handler << "() {\n"
+                  << "    // Code block here\n"
+                  << event_trace(w, *d, "") << "}\n"
+                  << "\nvoid " << w.name << "::" << cb
+                  << "(GtkWidget*, gpointer self) {\n"
+                  << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+                  << "    me->" << d->handler << "();\n}\n";
+                break;
+            case EventKind::SwitchPage:
+                o << "\nvoid " << w.name << "::" << d->handler
+                  << "(guint page) {\n"
+                  << "    // Code block here\n"
+                  << event_trace(w, *d, "") << "    (void)page;\n}\n"
+                  << "\nvoid " << w.name << "::" << cb
+                  << "(GtkNotebook*, GtkWidget*, guint page, gpointer self) {\n"
+                  << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+                  << "    me->" << d->handler << "(page);\n}\n";
+                break;
+            case EventKind::RowActivated:
+                o << "\nvoid " << w.name << "::" << d->handler
+                  << "(GtkTreePath* path) {\n"
+                  << "    // Code block here\n"
+                  << event_trace(w, *d, "") << "    (void)path;\n}\n"
+                  << "\nvoid " << w.name << "::" << cb
+                  << "(GtkTreeView*, GtkTreePath* path, GtkTreeViewColumn*, "
+                     "gpointer self) {\n"
+                  << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+                  << "    me->" << d->handler << "(path);\n}\n";
+                break;
+            case EventKind::RowSelected:
+                o << "\nvoid " << w.name << "::" << d->handler << "() {\n"
+                  << "    // Code block here\n"
+                  << event_trace(w, *d, "") << "}\n"
+                  << "\nvoid " << w.name << "::" << cb
+                  << "(GtkListBox*, GtkListBoxRow*, gpointer self) {\n"
+                  << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+                  << "    me->" << d->handler << "();\n}\n";
+                break;
+            case EventKind::DeleteEvent:
+                o << "\nbool " << w.name << "::" << d->handler << "() {\n"
+                  << "    // Code block here — return true to stop the "
+                     "window closing.\n"
+                  << event_trace(w, *d, "") << "    return false;\n}\n"
+                  << "\n"
+                     "gboolean "
+                  << w.name << "::" << cb
+                  << "(GtkWidget*, GdkEvent*, gpointer self) {\n"
+                  << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+                  << "    return me->" << d->handler << "() ? TRUE : FALSE;\n}\n";
+                break;
+            case EventKind::Draw:
+                o << "\ngboolean " << w.name << "::" << d->handler
+                  << "(GtkWidget*, cairo_t*, gpointer) {\n"
+                  << "    // Code block here — draw with cairo.\n"
+                  << event_trace(w, *d, "") << "    return FALSE;\n}\n";
+                break;
+            case EventKind::ItemClicked:
+                for (const std::string& id : event_item_ids(w)) {
+                    std::string h = std::string(d->handler) + "_" + id;
+                    o << "\nvoid " << w.name << "::" << h << "() {\n"
+                      << "    // Code block here\n"
+                      << event_trace(w, *d, " " + id) << "}\n"
+                      << "\nvoid " << w.name << "::" << h
+                      << "_cb(GtkToolButton*, gpointer self) {\n"
+                      << "    auto* me = static_cast<" << w.name
+                      << "*>(self);\n"
+                      << "    me->" << h << "();\n}\n";
+                }
+                break;
+            case EventKind::ItemActivate:
+                for (const std::string& id : event_item_ids(w)) {
+                    std::string h = std::string(d->handler) + "_" + id;
+                    o << "\nvoid " << w.name << "::" << h << "() {\n"
+                      << "    // Code block here\n"
+                      << event_trace(w, *d, " " + id) << "}\n"
+                      << "\nvoid " << w.name << "::" << h
+                      << "_cb(GtkMenuItem*, gpointer self) {\n"
+                      << "    auto* me = static_cast<" << w.name
+                      << "*>(self);\n"
+                      << "    me->" << h << "();\n}\n";
+                }
+                break;
+        }
+    }
+}
+
 // g_object_set lines for a widget's stored properties, one per property
 // (one steppable line each). Skips colours (CSS) and per-type properties
 // consumed at creation time.
@@ -385,25 +628,57 @@ static std::string emit_notebook_pages(const Widget& w, const std::string& M) {
     return o.str();
 }
 
-// Append one tool button per "New|Open|Save" entry.
+// Append one tool button per "New|Open|Save" entry. When the ToolBar's
+// "clicked" event is connected, each button is kept in a local and wired
+// to its own on_<item>_clicked handler.
 static std::string emit_toolbar_items(const Widget& w, const std::string& M) {
     std::ostringstream o;
+    bool connect = event_connected(w, "clicked");
     for (const std::string& name :
-         split_on('|', prop_or(w, "items", "New|Open|Save")))
-        o << "    gtk_toolbar_insert(GTK_TOOLBAR(" << M
-          << "), gtk_tool_button_new(nullptr, \"" << esc_c(name)
-          << "\"), -1);\n";
+         split_on('|', prop_or(w, "items", "New|Open|Save"))) {
+        if (connect) {
+            std::string id = menu_id_part(name);
+            o << "    GtkToolItem* tb_" << id
+              << " = gtk_tool_button_new(nullptr, \"" << esc_c(name)
+              << "\");\n"
+              << "    gtk_toolbar_insert(GTK_TOOLBAR(" << M << "), tb_" << id
+              << ", -1);\n"
+              << "    g_signal_connect(tb_" << id
+              << ", \"clicked\", G_CALLBACK(&" << w.name << "::on_clicked_"
+              << id << "_cb), this);\n";
+        } else {
+            o << "    gtk_toolbar_insert(GTK_TOOLBAR(" << M
+              << "), gtk_tool_button_new(nullptr, \"" << esc_c(name)
+              << "\"), -1);\n";
+        }
+    }
     return o.str();
 }
 
-// Append one top-level item per "File|Edit|Help" entry.
+// Append one top-level item per "File|Edit|Help" entry. When the MenuBar's
+// "activate" event is connected, each item is kept in a local and wired
+// to its own on_<item>_activate handler.
 static std::string emit_menubar_items(const Widget& w, const std::string& M) {
     std::ostringstream o;
+    bool connect = event_connected(w, "activate");
     for (const std::string& name :
-         split_on('|', prop_or(w, "menus", "File|Edit|Help")))
-        o << "    gtk_menu_shell_append(GTK_MENU_SHELL(" << M
-          << "), gtk_menu_item_new_with_label(\"" << esc_c(name)
-          << "\"));\n";
+         split_on('|', prop_or(w, "menus", "File|Edit|Help"))) {
+        if (connect) {
+            std::string id = menu_id_part(name);
+            o << "    GtkWidget* mb_" << id
+              << " = gtk_menu_item_new_with_label(\"" << esc_c(name)
+              << "\");\n"
+              << "    gtk_menu_shell_append(GTK_MENU_SHELL(" << M << "), mb_"
+              << id << ");\n"
+              << "    g_signal_connect(mb_" << id
+              << ", \"activate\", G_CALLBACK(&" << w.name
+              << "::on_activate_" << id << "_cb), this);\n";
+        } else {
+            o << "    gtk_menu_shell_append(GTK_MENU_SHELL(" << M
+              << "), gtk_menu_item_new_with_label(\"" << esc_c(name)
+              << "\"));\n";
+        }
+    }
     return o.str();
 }
 
@@ -517,6 +792,9 @@ static std::string shape_plot_draw_methods(const Widget& w) {
     o << "\ngboolean " << w.name << "::on_draw(GtkWidget* w, cairo_t* cr,\n"
       << "                              gpointer self) {\n"
       << "    auto* me = static_cast<" << w.name << "*>(self);\n"
+      << "#ifdef FDESIGNER_EVENT_TRACE\n"
+      << "    std::fprintf(stderr, \"EVENT " << w.name << " draw\\n\");\n"
+      << "#endif\n"
       << "    GtkAllocation a;\n"
       << "    gtk_widget_get_allocation(w, &a);\n";
     if (w.type == "Shape") {
@@ -726,6 +1004,7 @@ static std::string emit_widget_header(const Widget& w) {
     o << "    void util_error_print(const char* what);\n\n"
       << "    // Mouse handlers\n";
     stub_decls(o, kWidgetStubs);
+    event_handler_decls(o, w);
     o << "};\n";
     return o.str();
 }
@@ -1016,6 +1295,9 @@ fdw::Map %CLASS%::current_map(const Layout& L) const {
 gboolean %CLASS%::on_draw(GtkWidget* drawing, cairo_t* cr,
                           gpointer self) {
     auto* me = static_cast<%CLASS%*>(self);
+#ifdef FDESIGNER_EVENT_TRACE
+    std::fprintf(stderr, "EVENT %CLASS% draw\n");
+#endif
     int width = gtk_widget_get_allocated_width(drawing);
     int height = gtk_widget_get_allocated_height(drawing);
     cairo_set_source_rgb(cr, 1, 1, 1);
@@ -1537,6 +1819,7 @@ static std::string emit_widget_cpp(const Widget& w) {
              "inner_fixed);\n"
           << colour_lines(w, M)
           << connect_mouse(w.name, M, kWidgetStubs, 4)
+          << event_connect_lines(w, M)
           << "    // #endregion\n"
           << "}\n";
     } else {
@@ -1771,8 +2054,12 @@ static std::string emit_widget_cpp(const Widget& w) {
               << "            gtk_entry_set_width_chars(GTK_ENTRY(cell), "
                  "8);\n"
               << "            gtk_grid_attach(GTK_GRID(" << M
-              << "), cell, c, r, 1, 1);\n"
-              << "        }\n";
+              << "), cell, c, r, 1, 1);\n";
+            if (event_connected(w, "changed"))
+                o << "            g_signal_connect(cell, \"changed\", "
+                     "G_CALLBACK(&"
+                  << w.name << "::on_cell_changed_cb), this);\n";
+            o << "        }\n";
         } else if (t == "Memo") {
             o << "    gtk_text_buffer_set_text(gtk_text_view_get_buffer("
                  "GTK_TEXT_VIEW("
@@ -1880,6 +2167,7 @@ static std::string emit_widget_cpp(const Widget& w) {
           << prop_lines(w, M, skip)
           << colour_lines(w, M)
           << connect_mouse(w.name, M, kWidgetStubs, 4)
+          << event_connect_lines(w, M)
           << "    // #endregion\n"
           << "}\n";
     }
@@ -1897,6 +2185,7 @@ static std::string emit_widget_cpp(const Widget& w) {
       << "    std::fprintf(stderr, \"%s\\n\", what);\n"
       << "}\n";
     stub_defs(o, w.name, kWidgetStubs);
+    event_handler_defs(o, w);
     return o.str();
 }
 
