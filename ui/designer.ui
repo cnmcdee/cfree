@@ -100,6 +100,29 @@
               </object>
             </child>
             <child>
+              <object class="GtkMenuItem" id="menu_view">
+                <property name="label">View</property>
+                <property name="visible">True</property>
+                <child type="submenu">
+                  <object class="GtkMenu" id="view_menu">
+                    <property name="visible">True</property>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_view_code">
+                        <property name="label">Code View…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_view_theme">
+                        <property name="label">Color Theme…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
               <object class="GtkMenuItem" id="menu_debug">
                 <property name="label">Debug</property>
                 <property name="visible">True</property>

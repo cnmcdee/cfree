@@ -40,7 +40,8 @@
 #include "debugger.h"
 #include "debugger_ui.h"
 #include "preferences.h"  // [font-settings]
-
+#include "theme.h"
+#include "codeview.h"
 // ---------------------------------------------------------------- state
 
 // One OHLC bar (Massive aggregates format).
@@ -2438,7 +2439,79 @@ static Project snapshot_project() {
 // ---- CMake (cmake_build.h) ----
 // Forward declaration: defined just below on_generate.
 static bool cmake_build_dir(const std::string& dir);
+// ------------------------------------------------------- code view (View menu)
+//
+// View -> Code View shows the generated C++ for the current canvas in a
+// CodeView (line numbers, breakpoint dots, folding, themed highlighting).
+// View -> Color Theme opens the theme picker; applying repaints this view.
 
+static GtkWidget* g_codeview_window = nullptr;
+static GtkWidget* g_codeview = nullptr;
+
+static void refresh_code_view() {
+    if (!g_codeview) return;
+    Project p = snapshot_project();
+    GenResult r = generate_project(p, p.widgets, "/tmp/fdesigner_codeview");
+    std::string path, text;
+    if (r.ok) {
+        for (const auto& f : r.files)
+            if (f.size() > 4 && f.compare(f.size() - 4, 4, ".cpp") == 0 &&
+                f.find("MyWindow") != std::string::npos) {
+                path = f;
+                break;
+            }
+        if (path.empty())
+            for (const auto& f : r.files)
+                if (f.size() > 4 && f.compare(f.size() - 4, 4, ".cpp") == 0) {
+                    path = f;
+                    break;
+                }
+        if (!path.empty()) {
+            gchar* c = nullptr;
+            if (g_file_get_contents(path.c_str(), &c, nullptr, nullptr) &&
+                c) {
+                text = c;
+                g_free(c);
+            }
+        }
+    }
+    if (path.empty()) {
+        path = "/tmp/fdesigner_codeview/MyWindow.cpp";
+        text = "// Generate a design first: File -> Generate C++/GTK...\n";
+    }
+    codeview_set_text(g_codeview, text, path);
+    std::set<int> bps;
+    for (int ln : debugger_breakpoint_lines(path)) bps.insert(ln);
+    codeview_set_breakpoint_lines(g_codeview, bps);
+    status("Code view - " + path);
+}
+
+static void open_code_view() {
+    if (!g_codeview_window) {
+        g_codeview_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(g_codeview_window),
+                             "Code - generated C++");
+        gtk_window_set_default_size(GTK_WINDOW(g_codeview_window), 900, 600);
+        gtk_window_set_transient_for(GTK_WINDOW(g_codeview_window),
+                                     GTK_WINDOW(g_window));
+        g_codeview = codeview_new();
+        codeview_set_theme(g_codeview, theme_current());
+        codeview_set_breakpoint_callback(g_codeview,
+                                         debugger_toggle_breakpoint);
+        gtk_container_add(GTK_CONTAINER(g_codeview_window), g_codeview);
+        g_signal_connect(
+            g_codeview_window, "destroy",
+            G_CALLBACK(+[](GtkWidget*, gpointer) {
+                g_codeview_window = nullptr;
+                g_codeview = nullptr;
+            }),
+            nullptr);
+        gtk_widget_show_all(g_codeview_window);
+    } else {
+        gtk_window_present(GTK_WINDOW(g_codeview_window));
+    }
+    refresh_code_view();
+}
 static void on_generate(GtkMenuItem*, gpointer) {
     GtkWidget* dlg = gtk_file_chooser_dialog_new(
         "Generate C++/GTK — choose a folder", GTK_WINDOW(g_window),
@@ -3424,6 +3497,7 @@ static gboolean selftest_step(gpointer) {
         gtk_widget_destroy(tv);
         preferences_apply(fs);  // screen-wide, must not crash
         preferences_apply(FontSettings());  // back to defaults
+    }
 
     // ---- CMake (cmake_build.h) ---- Phase 9: settings round-trip,
     // CMakeLists.txt text, and a real configure+build of a small CMake
@@ -3479,6 +3553,152 @@ static gboolean selftest_step(gpointer) {
         CMakeBuildResult gr_cmake =
             cmake_build_project("/tmp/fdesigner_gen_test", def);
         check(gr_cmake.ok && gr_cmake.configured);
+    }
+
+    // Phase 10: color themes + code-view gutter / folding.
+    {
+        // Four distinct built-ins; unknown name falls back to Light.
+        std::vector<std::string> tnames = CodeTheme::builtin_names();
+        check(tnames.size() == 4);
+        CodeTheme light = CodeTheme::builtin("Light");
+        CodeTheme dark = CodeTheme::builtin("Dark");
+        CodeTheme mono = CodeTheme::builtin("Monokai");
+        CodeTheme solar = CodeTheme::builtin("Solarized Dark");
+        check(light.keyword != dark.keyword &&
+              dark.keyword != mono.keyword &&
+              mono.keyword != solar.keyword);
+        check(light.background != dark.background);
+        check(CodeTheme::builtin("Nope").name == "Light");
+        check(CodeTheme::valid_color("#1a2b3c") &&
+              !CodeTheme::valid_color("red") &&
+              !CodeTheme::valid_color("#12345"));
+        // Persistence, including a customised colour on a named base.
+        CodeTheme custom = dark;
+        custom.keyword = "#ff0000";
+        check(custom.save("/tmp/fdesigner_theme.conf"));
+        CodeTheme reloaded;
+        check(reloaded.load("/tmp/fdesigner_theme.conf"));
+        check(reloaded.name == "Dark" && reloaded.keyword == "#ff0000" &&
+              reloaded.background == dark.background);
+        // Missing file: load fails, defaults kept.
+        CodeTheme missing;
+        check(!missing.load("/tmp/fdesigner_theme_no_such.conf"));
+        check(missing.name == "Light");
+        // Tokeniser spans on a representative snippet.
+        std::string sample =
+            "#include <gtk/gtk.h>\n// hi\nint main() { const char* s = "
+            "\"x\"; return 42; }\n";
+        std::vector<HlSpan> spans = theme_tokenize(sample);
+        auto has_span = [&](const std::string& kind,
+                            const std::string& word) {
+            for (const auto& sp : spans)
+                if (sp.kind == kind &&
+                    sample.substr(sp.start, sp.end - sp.start) == word)
+                    return true;
+            return false;
+        };
+        check(has_span("preprocessor", "#include <gtk/gtk.h>"));
+        check(has_span("comment", "// hi"));
+        check(has_span("type", "int"));
+        check(has_span("keyword", "return"));
+        check(has_span("string", "\"x\""));
+        check(has_span("number", "42"));
+        // Folding: nested braces, region in/around braces, multi-line
+        // comment, #if block, unbalanced braces fail gracefully.
+        std::vector<std::string> flines = {
+            "#region Outer",   // 0
+            "class Foo {",     // 1
+            "  void bar() {",  // 2
+            "    if (x) {",    // 3
+            "      work();",   // 4
+            "    }",           // 5
+            "    /* multi",    // 6
+            "       line */",  // 7
+            "  }",             // 8
+            "};",              // 9
+            "#endregion",     // 10
+            "#if DEBUG",      // 11
+            "int d = 1;",      // 12
+            "#endif",         // 13
+            "}",               // 14: extra close, ignored
+            "int leftover() {",  // 15: never closed, no fold
+            "  return 1;",     // 16
+        };
+        std::vector<FoldRegion> regs = codeview_find_regions(flines);
+        check(regs.size() == 6);
+        auto has_region = [&](int st, int en, const std::string& kind) {
+            for (const auto& r : regs)
+                if (r.start_line == st && r.end_line == en &&
+                    r.kind == kind)
+                    return true;
+            return false;
+        };
+        check(has_region(0, 10, "region"));
+        check(has_region(1, 9, "brace"));
+        check(has_region(2, 8, "brace"));
+        check(has_region(3, 5, "brace"));
+        check(has_region(6, 7, "comment"));
+        check(has_region(11, 13, "preproc"));
+        // Depths nest: region 0, class 1, method 2, if 3.
+        for (const auto& r : regs) {
+            if (r.start_line == 0) check(r.depth == 0);
+            if (r.start_line == 1) check(r.depth == 1);
+            if (r.start_line == 3) check(r.depth == 3);
+        }
+        // Visible lines: folding the region hides 1..9 only.
+        std::vector<int> vis = codeview_visible_lines(flines, {0});
+        check(vis.size() == 8 && vis[0] == 0 && vis[1] == 10);
+        vis = codeview_visible_lines(flines, {2});
+        check(vis.size() == 12);
+        vis = codeview_visible_lines(flines, {0, 2});
+        check(vis.size() == 8);  // inner fold adds nothing under outer
+        // Widget level: fold toggle, gutter clicks, current line, theme.
+        std::string ftext;
+        for (const auto& l : flines) ftext += l + "\n";
+        GtkWidget* cv = codeview_new();
+        codeview_set_text(cv, ftext, "/tmp/fdesigner_codeview_test.cpp");
+        check(codeview_line_count(cv) == 17);
+        check(codeview_regions(cv).size() == 6);
+        check(codeview_toggle_fold_at(cv, 3));  // bar() starts line 3
+        check(codeview_is_folded(cv, 3));
+        check(!codeview_toggle_fold_at(cv, 5));  // line 5: no region start
+        codeview_gutter_click(cv, 3, true);     // fold-zone click unfolds
+        check(!codeview_is_folded(cv, 3));
+        codeview_gutter_click(cv, 5, false);    // breakpoint dot on line 5
+        check(codeview_breakpoint_lines(cv).count(5) == 1);
+        codeview_gutter_click(cv, 5, false);
+        check(codeview_breakpoint_lines(cv).empty());
+        codeview_set_current_line(cv, 4);
+        check(codeview_current_line(cv) == 4);
+        codeview_set_theme(cv, dark);
+        GtkTextBuffer* cbuf = gtk_text_view_get_buffer(
+            GTK_TEXT_VIEW(codeview_text_view(cv)));
+        GtkTextTag* kw = gtk_text_tag_table_lookup(
+            gtk_text_buffer_get_tag_table(cbuf), "theme-keyword");
+        // "foreground" is write-only on GtkTextTag and
+        // "foreground-rgba" does not read back on this GTK; the
+        // readable form is "foreground-gdk" (16-bit channels, 8-bit
+        // values stored as v*257). Dark keyword #569cd6.
+        GdkColor* col = nullptr;
+        if (kw) g_object_get(kw, "foreground-gdk", &col, NULL);
+        check(kw && col && col->red / 257 == 0x56 &&
+              col->green / 257 == 0x9c && col->blue / 257 == 0xd6);
+        if (col) g_boxed_free(g_type_from_name("GdkColor"), col);
+        gtk_widget_destroy(cv);
+        // Breakpoint staging through the real backend (temp file only).
+        GdbSession bsess;
+        check(bsess.stage_breakpoint("foo.cpp:42"));
+        check(bsess.stage_breakpoint("foo.cpp:42"));  // dedup, still 1
+        check(bsess.breakpoints().size() == 1);
+        check(bsess.remove_staged_breakpoint("foo.cpp:42"));
+        check(!bsess.remove_staged_breakpoint("foo.cpp:42"));
+        check(bsess.breakpoints().empty());
+        check(bsess.stage_breakpoint("foo.cpp:7"));
+        check(bsess.save_breakpoints("/tmp/fdesigner_theme_bps.conf"));
+        GdbSession bsess2;
+        check(bsess2.load_breakpoints("/tmp/fdesigner_theme_bps.conf"));
+        check(bsess2.breakpoints().size() == 1 &&
+              bsess2.breakpoints()[0].location == "foo.cpp:7");
     }
 
     std::printf("SELFTEST %s items=%zu\n", ok ? "PASS" : "FAIL",
@@ -3596,6 +3816,26 @@ int main(int argc, char** argv) {
         g_signal_connect(mi_cs, "activate", G_CALLBACK(on_cmake_settings),
                          nullptr);
 
+    // View menu -> code view window / theme picker.
+    GObject* mi_code = gtk_builder_get_object(builder, "mi_view_code");
+    if (mi_code)
+        g_signal_connect(mi_code, "activate",
+                         G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+                             open_code_view();
+                         }),
+                         nullptr);
+    GObject* mi_theme = gtk_builder_get_object(builder, "mi_view_theme");
+    if (mi_theme)
+        g_signal_connect(mi_theme, "activate",
+                         G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+                             theme_picker_open(g_window,
+                                               +[](const CodeTheme& t) {
+                                                   if (g_codeview)
+                                                       codeview_set_theme(
+                                                           g_codeview, t);
+                                               });
+                         }),
+                         nullptr);
     // Debug menu -> stepping debugger window / settings.
     GObject* mi_dbg = gtk_builder_get_object(builder, "mi_debug_open");
     if (mi_dbg)
@@ -3681,6 +3921,21 @@ int main(int argc, char** argv) {
     if (std::getenv("FDESIGNER_OPEN_PREFERENCES") != nullptr)
         g_idle_add(+[](gpointer) -> gboolean {
                        preferences_open(g_window);
+                       return G_SOURCE_REMOVE;
+                   },
+                   nullptr);
+
+    // Test hooks (also used by tests/theme_tests.sh): open the code
+    // view / theme picker at startup.
+    if (std::getenv("FDESIGNER_OPEN_CODEVIEW") != nullptr)
+        g_idle_add(+[](gpointer) -> gboolean {
+                       open_code_view();
+                       return G_SOURCE_REMOVE;
+                   },
+                   nullptr);
+    if (std::getenv("FDESIGNER_OPEN_THEME") != nullptr)
+        g_idle_add(+[](gpointer) -> gboolean {
+                       theme_picker_open(g_window, nullptr);
                        return G_SOURCE_REMOVE;
                    },
                    nullptr);

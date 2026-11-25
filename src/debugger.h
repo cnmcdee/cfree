@@ -182,7 +182,10 @@ public:
     // location; a live breakpoint at the location is left alone.
     bool stage_breakpoint_opts(const std::string& location,
                                const Breakpoint& opts);
-    bool add_breakpoint(const std::string& location, Breakpoint& out,
+    // Erase a staged (not yet inserted into gdb, id == 0) breakpoint
+    // by location. Used by the code-view gutter toggle: remove_breakpoint
+    // needs a live gdb, this one does not. Returns false if not staged.
+    bool remove_staged_breakpoint(const std::string& location);    bool add_breakpoint(const std::string& location, Breakpoint& out,
                         std::string& err);
     // As above, with handler options. A conditional breakpoint needs a
     // non-empty condition, a logpoint a non-empty message; gdb validates

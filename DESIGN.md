@@ -352,3 +352,51 @@ Text/Memo views and any other GtkTextView use it). Invalid sizes are
 clamped to 6–48 pt and empty values fall back to the defaults. Logic lives
 in `src/preferences.h/.cpp`; tests: a font block in the self-test plus
 `tests/font_tests.sh` (harness + self-test + Preferences dialog smoke test).
+## Color themes + code view (2026-11-26)
+
+View -> Code View shows the generated C++ for the current canvas in a
+`CodeView` (`src/codeview.h/.cpp`): a `GtkTextView` with a gutter
+(`GtkDrawingArea` beside it in one `GtkScrolledWindow`, so it scrolls in
+lockstep). The gutter shows line numbers, red-dot breakpoints, and `[-]` /
+`[+]` fold toggles. Clicking the fold-marker column folds/unfolds; clicking
+elsewhere in the gutter toggles a breakpoint at that line through the real
+debugger backend (`debugger_toggle_breakpoint()` in `src/debugger_ui.h/.cpp`,
+which stages/inserts into the shared `GdbSession` and persists to
+`debugger_bps.conf`); `GdbSession::remove_staged_breakpoint()` was added
+because `remove_breakpoint()` needs a live gdb. The current execution line
+can be highlighted via `codeview_set_current_line()`.
+
+Color themes (`src/theme.h/.cpp`): four built-ins — Light, Dark, Monokai,
+Solarized Dark — colouring keywords, types, strings, comments, numbers,
+preprocessor lines, background/foreground and the current line. View ->
+Color Theme... opens the picker (built-in combo + per-role colour buttons);
+the choice persists to `~/.config/fdesigner/theme.conf`
+(`FDESIGNER_THEME_CONF` overrides). Deliberately separate from the
+font-settings branch's `settings.conf` / Preferences dialog so the two
+merge cleanly; a later pass can move the picker into Preferences.
+Gotcha: GTK 3.20+ draws the text area from the `text` subnode, so the
+theme CSS must set `textview text`, not just `textview`, or the
+background stays white while the tag colours change. Also on this GTK,
+`GtkTextTag` "foreground" is write-only and "foreground-rgba" does not
+read back — tests read the colour via "foreground-gdk" instead.
+
+Folding (`codeview_find_regions()`, pure, unit-tested) covers every
+natural foldable unit: `#region` / `#endregion`, every matched-brace span
+(functions, if/else, loops, classes, structs, namespaces, initializers),
+multi-line `/* */` comments, and `#if` / `#ifdef` / `#ifndef` ... `#endif`
+blocks; nesting works in all directions (braces in regions and vice
+versa). Braces in strings, character literals, raw strings and comments
+are ignored. Unbalanced input fails gracefully: an unmatched `}` is
+ignored and an unclosed `{` / `#region` / `#if` at EOF produces no fold.
+Folded lines are hidden with an `invisible` text tag (proven to collapse
+them to zero height), so file line numbers stay exact. The fold end line
+stays visible (e.g. the closing `}`).
+
+Tests: `tests/theme_tests.sh` (harness `tests/theme_tests.cpp`, 57 checks:
+themes, persistence incl. default path, tokeniser, regions incl. nested
+and unbalanced, visible lines, widget-level fold/gutter/current-line,
+real gutter->debugger toggle with HOME redirected) + self-test Phase 8 +
+xdotool smoke tests for the Code View window and the theme dialog.
+A live xdotool gutter click on the real app set
+`/tmp/fdesigner_codeview/MyWindow.cpp:6|1` in the persisted bps file, and
+a fold click collapsed the constructor body (lines 7-20 hidden, 6 -> 21).
