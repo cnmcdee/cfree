@@ -2,12 +2,12 @@
 
 ## What we're building
 
-A C++ rebuild of Chris's fdesigner (Tkinter Rapid Designer). The original is a
+A C++ rebuild of the author's fdesigner (Tkinter Rapid Designer). The original is a
 ~7,000-line Python/Tkinter app (`original/tkinter_designer/fdesigner7.py`):
 place widgets on a canvas at absolute positions, edit their properties, then
 generate runnable source code for the layout.
 
-Per Chris's decision (2026-11-25) the C++ version **generates C++/GTK code**,
+Per the author's decision (2026-11-25) the C++ version **generates C++/GTK code**,
 not Tkinter Python. The designer's own UI is also GTK, defined in Glade .ui
 files. No Qt anywhere.
 
@@ -19,14 +19,14 @@ files. No Qt anywhere.
   authored in Glade. No gtkmm: GtkBuilder is the native path, and this keeps
   the generated code and the designer itself on the same API.
 - Runs on **X11** (GTK 3's X11 backend), same as the original Tk app.
-- Build: g++ + pkg-config (`gtk+-3.0`), plain Makefile, like Chris's other
+- Build: g++ + pkg-config (`gtk+-3.0`), plain Makefile, like the author's other
   tools.
 - Toolchain verified on Muse's VM 2026-11-25: GTK 3.24.41 headers + Glade
   installed; a C++ test program including <gtk/gtk.h> compiles, links, and
   runs under Xvfb. (VM quirk: apt's libzstd-dev version pin conflicts with the
   VM's patched libzstd1, so the -dev packages were installed from downloaded
   .debs with `dpkg --force-depends` — headers only, no runtime change. On
-  Chris's Parrot box a plain `apt install libgtk-3-dev glade` should work.)
+  the author's Parrot box a plain `apt install libgtk-3-dev glade` should work.)
 
 ## Generated output
 
@@ -85,8 +85,8 @@ struct Project {
 
 ## Project file format
 
-**JSON** (`.fdj`), replacing Python pickle, which C++ cannot read. If Chris
-has old .pkl designs he wants to keep, a one-off Python converter script
+**JSON** (`.fdj`), replacing Python pickle, which C++ cannot read. If the author
+has old .pkl designs to keep, a one-off Python converter script
 (pkl -> fdj) can be written later; pickle stays on the Python side only.
 
 ## What does not port directly
@@ -121,7 +121,7 @@ supported (Toplevel content starts as an empty GtkFixed; menus are a
 one-level text spec), and there is no .pkl converter unless old designs
 need importing.
 
-**Generator revision 2026-11-25 (Chris's direction):** generated projects
+**Generator revision 2026-11-25 (the author's direction):** generated projects
 are ALL CODE (no .ui — so a stepping debugger can walk construction) and
 every widget is a STANDALONE CLASS in its own .h/.cpp pair, mirroring the
 Python generator's boilerplate: per-widget `// #region`, creation +
