@@ -3,8 +3,8 @@ CXXFLAGS ?= -O2 -Wall -Wextra -std=c++17
 GTKFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTKLIBS  := $(shell pkg-config --libs gtk+-3.0)
 
-fdesigner: src/main.cpp src/generator.cpp src/project_io.cpp src/model.h src/props.h src/generator.h src/project_io.h src/indicators.h src/indicators_embedded.h src/drawings.h src/drawings_embedded.h ui/designer.ui
-	$(CXX) $(CXXFLAGS) -o $@ src/main.cpp src/generator.cpp src/project_io.cpp $(GTKFLAGS) $(GTKLIBS)
+fdesigner: src/main.cpp src/generator.cpp src/project_io.cpp src/debugger.cpp src/debugger_ui.cpp src/model.h src/props.h src/generator.h src/project_io.h src/debugger.h src/debugger_ui.h src/indicators.h src/indicators_embedded.h src/drawings.h src/drawings_embedded.h ui/designer.ui
+	$(CXX) $(CXXFLAGS) -o $@ src/main.cpp src/generator.cpp src/project_io.cpp src/debugger.cpp src/debugger_ui.cpp $(GTKFLAGS) $(GTKLIBS)
 
 src/indicators_embedded.h: src/indicators.h tools/embed_indicators.sh
 	sh tools/embed_indicators.sh src/indicators.h $@

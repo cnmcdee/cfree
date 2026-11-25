@@ -64,6 +64,75 @@
                 </child>
               </object>
             </child>
+            <child>
+              <object class="GtkMenuItem" id="menu_debug">
+                <property name="label">Debug</property>
+                <property name="visible">True</property>
+                <child type="submenu">
+                  <object class="GtkMenu" id="debug_menu">
+                    <property name="visible">True</property>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_debug_open">
+                        <property name="label">Open Debugger…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkSeparatorMenuItem" id="mi_debug_sep1">
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="menu_debugger_sub">
+                        <property name="label">Debugger</property>
+                        <property name="visible">True</property>
+                        <child type="submenu">
+                          <object class="GtkMenu" id="debugger_submenu">
+                            <property name="visible">True</property>
+                            <child>
+                              <object class="GtkCheckMenuItem" id="mi_dbg_break_main">
+                                <property name="label">Break on main</property>
+                                <property name="visible">True</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkCheckMenuItem" id="mi_dbg_stop_entry">
+                                <property name="label">Stop on entry</property>
+                                <property name="visible">True</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkCheckMenuItem" id="mi_dbg_pretty">
+                                <property name="label">Pretty-print values</property>
+                                <property name="visible">True</property>
+                                <property name="active">True</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkSeparatorMenuItem" id="mi_dbg_sep">
+                                <property name="visible">True</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkMenuItem" id="mi_dbg_settings">
+                                <property name="label">Settings…</property>
+                                <property name="visible">True</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_debug_settings">
+                        <property name="label">Debugger Settings…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
           </object>
           <packing>
             <property name="expand">False</property>

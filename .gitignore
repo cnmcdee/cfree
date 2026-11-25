@@ -1,3 +1,4 @@
 fdesigner
 *.o
 tests/gen_matrix
+tests/debugger/work/

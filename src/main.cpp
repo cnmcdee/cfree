@@ -34,6 +34,8 @@
 #include "generator.h"
 #include "indicators.h"
 #include "project_io.h"
+#include "debugger.h"
+#include "debugger_ui.h"
 
 // ---------------------------------------------------------------- state
 
@@ -2339,6 +2341,44 @@ static gboolean selftest_step(gpointer) {
         }
     }
 
+    // Debugger backend: settings round-trip, breakpoint-location
+    // parsing, MI value parsing, staged breakpoints (no gdb needed).
+    {
+        DebuggerSettings ds;
+        ds.gdb_path = "/usr/bin/gdb";
+        ds.break_on_main = true;
+        ds.pretty_print = false;
+        ds.default_args = "--test-arg";
+        check(ds.save("/tmp/fdesigner_dbg.conf"));
+        DebuggerSettings ds2;
+        check(ds2.load("/tmp/fdesigner_dbg.conf"));
+        check(ds2.gdb_path == "/usr/bin/gdb" && ds2.break_on_main &&
+              !ds2.pretty_print && ds2.default_args == "--test-arg");
+        std::string f;
+        int ln = 0;
+        std::string fn;
+        check(parse_breakpoint_location("foo.cpp:12", f, ln, fn) &&
+              f == "foo.cpp" && ln == 12);
+        check(parse_breakpoint_location("main", f, ln, fn) && fn == "main");
+        check(!parse_breakpoint_location("", f, ln, fn));
+        check(!parse_breakpoint_location("foo.cpp:abc", f, ln, fn));
+        MiValue v;
+        size_t pos = 0;
+        check(mi_parse_value("{name=\"sum\",type=\"int\",value=\"0\"}",
+                             pos, v) &&
+              v.get_str("name") == "sum" && v.get_str("value") == "0");
+        GdbSession sess;
+        check(sess.stage_breakpoint("main"));
+        check(sess.stage_breakpoint("foo.cpp:42"));
+        check(!sess.stage_breakpoint(""));
+        check(sess.breakpoints().size() == 2);
+        check(sess.save_breakpoints("/tmp/fdesigner_dbg_bps.conf"));
+        GdbSession sess2;
+        check(sess2.load_breakpoints("/tmp/fdesigner_dbg_bps.conf"));
+        check(sess2.breakpoints().size() == 2 &&
+              sess2.breakpoints()[0].location == "main");
+    }
+
     std::printf("SELFTEST %s items=%zu\n", ok ? "PASS" : "FAIL",
                 g_items.size());
     std::fflush(stdout);
@@ -2425,6 +2465,61 @@ int main(int argc, char** argv) {
     if (mi_save)
         g_signal_connect(mi_save, "activate", G_CALLBACK(on_save), nullptr);
 
+    // Debug menu -> stepping debugger window / settings.
+    GObject* mi_dbg = gtk_builder_get_object(builder, "mi_debug_open");
+    if (mi_dbg)
+        g_signal_connect(mi_dbg, "activate",
+                         G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+                             debugger_window_open(g_window);
+                         }),
+                         nullptr);
+    auto on_dbg_settings = +[](GtkMenuItem*, gpointer) {
+        debugger_settings_open(g_window);
+    };
+    GObject* mi_dset = gtk_builder_get_object(builder, "mi_debug_settings");
+    if (mi_dset)
+        g_signal_connect(mi_dset, "activate", G_CALLBACK(on_dbg_settings),
+                         nullptr);
+    GObject* mi_dset2 = gtk_builder_get_object(builder, "mi_dbg_settings");
+    if (mi_dset2)
+        g_signal_connect(mi_dset2, "activate", G_CALLBACK(on_dbg_settings),
+                         nullptr);
+    // "Debugger" sub-menu toggles: flip the setting, save it, and apply
+    // it to any live session (takes effect on the next Run).
+    auto on_dbg_toggle = +[](GtkCheckMenuItem* item, gpointer which) {
+        DebuggerSettings s = debugger_current_settings();
+        bool on = gtk_check_menu_item_get_active(item);
+        const char* w = (const char*)which;
+        if (!std::strcmp(w, "main")) s.break_on_main = on;
+        else if (!std::strcmp(w, "entry")) s.stop_on_entry = on;
+        else if (!std::strcmp(w, "pretty")) s.pretty_print = on;
+        s.save();
+    };
+    GObject* mi_bm = gtk_builder_get_object(builder, "mi_dbg_break_main");
+    if (mi_bm) {
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(mi_bm),
+            debugger_current_settings().break_on_main);
+        g_signal_connect(mi_bm, "activate", G_CALLBACK(on_dbg_toggle),
+                         (gpointer)"main");
+    }
+    GObject* mi_se = gtk_builder_get_object(builder, "mi_dbg_stop_entry");
+    if (mi_se) {
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(mi_se),
+            debugger_current_settings().stop_on_entry);
+        g_signal_connect(mi_se, "activate", G_CALLBACK(on_dbg_toggle),
+                         (gpointer)"entry");
+    }
+    GObject* mi_pr = gtk_builder_get_object(builder, "mi_dbg_pretty");
+    if (mi_pr) {
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(mi_pr),
+            debugger_current_settings().pretty_print);
+        g_signal_connect(mi_pr, "activate", G_CALLBACK(on_dbg_toggle),
+                         (gpointer)"pretty");
+    }
+
     g_signal_connect(g_window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
     g_signal_connect(g_window, "key-press-event", G_CALLBACK(on_key_press),
                      nullptr);
@@ -2434,6 +2529,22 @@ int main(int argc, char** argv) {
     refresh_props();  // window properties until something is selected
     status("Phase 2 — pick a widget from the palette to place it");
     gtk_widget_show_all(g_window);
+
+    if (std::getenv("FDESIGNER_OPEN_DEBUGGER") != nullptr)
+        g_idle_add(+[](gpointer) -> gboolean {
+                       debugger_window_open(g_window);
+                       return G_SOURCE_REMOVE;
+                   },
+                   nullptr);
+    // Test hook (also used by tests/debugger_tests.sh): open the debugger
+    // window and its settings dialog at startup.
+    if (std::getenv("FDESIGNER_OPEN_DEBUGGER_SETTINGS") != nullptr)
+        g_idle_add(+[](gpointer) -> gboolean {
+                       debugger_window_open(g_window);
+                       debugger_settings_open(g_window);
+                       return G_SOURCE_REMOVE;
+                   },
+                   nullptr);
 
     bool selftest = std::getenv("FDESIGNER_SELFTEST") != nullptr;
     if (selftest) g_idle_add(selftest_step, nullptr);

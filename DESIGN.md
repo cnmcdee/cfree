@@ -226,3 +226,33 @@ and wheel zoom, in both the designer preview and generated code.
 - `ui/designer.ui` — the designer's own main window (Glade).
 - `src/main.cpp` — entry point; loads the .ui via GtkBuilder.
 - `Makefile` — builds `./fdesigner`.
+
+## Stepping debugger (GDB/MI)
+
+**Debug menu → Open Debugger…** opens a separate debugger window (not a
+panel in the main window). It drives real gdb over the MI protocol
+(`gdb -q -i=mi2`, see `src/debugger.h` / `src/debugger.cpp`).
+
+- **Toolbar:** Run, Continue, Step Over, Step Into, Step Out, Stop
+  (interrupts a running target; press again to kill it), Restart, Settings.
+- **Breakpoints:** type `file.cpp:123` or a function name and press Add BP;
+  the list shows id / location / enabled toggle / hit count. Enable/disable
+  via the toggle, Remove deletes. Breakpoints are saved to
+  `~/.config/fdesigner/debugger_bps.conf` and restored on the next run.
+- **Variables:** Locals (name / type / value) and a watch list (add any
+  expression, e.g. `sum + 1`) refresh on every stop; the Stack pane shows
+  the current frames, and the status line shows the stopped file:line and
+  function. Target stdout/stderr appears in the bottom pane.
+- **Settings:** the Settings toolbar button, **Debug → Debugger Settings…**,
+  and the **Debug → Debugger** sub-menu (which also has Break on main /
+  Stop on entry / Pretty-print values toggles). Settings live in
+  `~/.config/fdesigner/debugger.conf`: `gdb_path`, `break_on_main`,
+  `stop_on_entry`, `pretty_print`, `print_all_locals`, `default_args`.
+  They take effect on the next Run (pretty-printing is applied when the
+  gdb session starts). The same settings are honoured by the backend
+  (`GdbSession`), so the headless tests exercise them too.
+- **Targets:** any program compiled with `-g` — console programs and GTK
+  apps alike (the GTK app runs under the same X display as the designer).
+- **Tests:** `tests/debugger_tests.sh` (console suite, GTK suite under
+  Xvfb, GUI smoke test) — see `tests/debugger/` for the targets and the
+  headless harness `dbg_harness.cpp`, which drives `GdbSession` directly.
