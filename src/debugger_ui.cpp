@@ -2,7 +2,8 @@
 // Layout (all built in code, no extra .ui file — the window is dynamic):
 //   toolbar: Run | Continue | Step Over | Step Into | Step Out | Stop | Restart | Settings
 //   target row: executable entry + Browse + args entry + status label
-//   middle: breakpoints list (id, location, enabled toggle, hits) |
+//   middle: breakpoints list (id, location, enabled toggle, hits, type,
+//           condition, ignore count, log message) |
 //           locals list (name, type, value) + watch entry/add + watch list
 //   stack frames list + current source line label
 //   bottom: target stdout/stderr text view
@@ -11,6 +12,7 @@
 #include "debugger_ui.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -90,8 +92,16 @@ static void refresh_bp_list() {
         if (!b.file.empty() && b.line > 0 &&
             loc.find(b.file) == std::string::npos)
             loc += "  (" + b.file + ":" + std::to_string(b.line) + ")";
+        // Message column: the logpoint template, with the group appended
+        // when one is set (plain/conditional breakpoints show the group
+        // alone, so grouped breakpoints stay identifiable in the list).
+        std::string msg = b.log_message;
+        if (!b.group.empty())
+            msg += (msg.empty() ? "[" : "  [") + b.group + "]";
         gtk_list_store_set(g_bp_store, &it, 0, b.id, 1, loc.c_str(), 2,
-                           b.enabled ? TRUE : FALSE, 3, b.hits, -1);
+                           b.enabled ? TRUE : FALSE, 3, b.hits, 4,
+                           bp_kind_name(b.kind), 5, b.condition.c_str(), 6,
+                           b.ignore_count, 7, msg.c_str(), -1);
     }
 }
 
@@ -334,7 +344,234 @@ static void on_bp_remove_clicked(GtkButton*, gpointer) {
     int id = 0;
     gtk_tree_model_get(model, &it, 0, &id, -1);
     std::string err;
-    if (!g_session->remove_breakpoint(id, err)) show_error(g_dbg_window, err);
+    if (id > 0) {
+        if (!g_session->remove_breakpoint(id, err))
+            show_error(g_dbg_window, err);
+    } else {
+        // Staged breakpoint (not in gdb yet): remove by list position —
+        // staged entries all share id 0, so the id alone cannot tell
+        // them apart.
+        GtkTreePath* tp = gtk_tree_model_get_path(model, &it);
+        int idx = tp ? gtk_tree_path_get_indices(tp)[0] : -1;
+        if (tp) gtk_tree_path_free(tp);
+        auto& bps = const_cast<std::vector<Breakpoint>&>(
+            g_session->breakpoints());
+        if (idx >= 0 && idx < (int)bps.size()) bps.erase(bps.begin() + idx);
+    }
+    g_session->save_breakpoints();
+    sync_ui_from_session();
+}
+
+// --- breakpoint add/edit dialog -----------------------------------------
+//
+// One dialog for the full handler set: kind (plain / conditional /
+// logpoint), condition, ignore count, log message, group. For a new
+// breakpoint the location is editable; for an existing one it is shown
+// read-only (the backend's update keeps the location — delete the
+// breakpoint and add a new one to move it).
+
+static void bp_dialog_set_sensitive(GtkComboBox* kind_combo,
+                                    GtkWidget* cond_entry,
+                                    GtkWidget* log_entry) {
+    int active = gtk_combo_box_get_active(kind_combo);
+    gtk_widget_set_sensitive(cond_entry, active == 1);
+    gtk_widget_set_sensitive(log_entry, active == 2);
+}
+
+static void on_bp_kind_changed(GtkComboBox* combo, gpointer data) {
+    GtkWidget** widgets = (GtkWidget**)data;  // [cond_entry, log_entry]
+    bp_dialog_set_sensitive(combo, widgets[0], widgets[1]);
+}
+
+// Edit `bp` in place; returns false when the user cancelled or the
+// values do not validate (an error is shown in that case).
+static bool breakpoint_edit_dialog(GtkWidget* parent, const char* title,
+                                   Breakpoint& bp, bool is_new) {
+    GtkWidget* d = gtk_dialog_new_with_buttons(
+        title, GTK_WINDOW(parent), GTK_DIALOG_MODAL, "_Cancel",
+        GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, nullptr);
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(d));
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_container_add(GTK_CONTAINER(content), grid);
+
+    GtkWidget* loc_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(loc_entry), bp.location.c_str());
+    gtk_widget_set_hexpand(loc_entry, TRUE);
+    gtk_widget_set_sensitive(loc_entry, is_new);
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Location:"), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), loc_entry, 1, 0, 1, 1);
+
+    GtkWidget* kind_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(kind_combo), "Plain");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(kind_combo),
+                                   "Conditional");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(kind_combo),
+                                   "Logpoint");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(kind_combo),
+                             bp.kind == BpKind::Conditional
+                                 ? 1
+                                 : (bp.kind == BpKind::Logpoint ? 2 : 0));
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Type:"), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), kind_combo, 1, 1, 1, 1);
+
+    GtkWidget* cond_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(cond_entry), bp.condition.c_str());
+    gtk_entry_set_placeholder_text(
+        GTK_ENTRY(cond_entry), "e.g. i == 5  (only for Conditional)");
+    gtk_widget_set_hexpand(cond_entry, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Condition:"), 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), cond_entry, 1, 2, 1, 1);
+
+    GtkWidget* ignore_spin = gtk_spin_button_new_with_range(0, 1000000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ignore_spin),
+                              bp.ignore_count);
+    gtk_grid_attach(GTK_GRID(grid),
+                    gtk_label_new("Ignore first N hits:"), 0, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), ignore_spin, 1, 3, 1, 1);
+
+    GtkWidget* log_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(log_entry), bp.log_message.c_str());
+    gtk_entry_set_placeholder_text(
+        GTK_ENTRY(log_entry), "e.g. i={i} sum={sum}  (only for Logpoint)");
+    gtk_widget_set_hexpand(log_entry, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Log message:"), 0, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), log_entry, 1, 4, 1, 1);
+
+    GtkWidget* group_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(group_entry), bp.group.c_str());
+    gtk_entry_set_placeholder_text(GTK_ENTRY(group_entry),
+                                   "optional group label");
+    gtk_widget_set_hexpand(group_entry, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Group:"), 0, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), group_entry, 1, 5, 1, 1);
+
+    GtkWidget* hint = gtk_label_new(
+        "Conditional: stops only when the condition is true.\n"
+        "Logpoint: prints the message (never stops) — {expr} prints as an\n"
+        "integer, {s:name} as a string, {f:x} as a float, {x:v} as hex.\n"
+        "Ignore: the first N hits are skipped, then it stops as normal.\n"
+        "Logpoint output appears in the target-output pane as [gdb] text.");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_grid_attach(GTK_GRID(grid), hint, 0, 6, 2, 1);
+
+    GtkWidget* sens_widgets[2] = {cond_entry, log_entry};
+    g_signal_connect(kind_combo, "changed", G_CALLBACK(on_bp_kind_changed),
+                     sens_widgets);
+    bp_dialog_set_sensitive(GTK_COMBO_BOX(kind_combo), cond_entry, log_entry);
+
+    gtk_widget_show_all(d);
+    if (gtk_dialog_run(GTK_DIALOG(d)) != GTK_RESPONSE_ACCEPT) {
+        gtk_widget_destroy(d);
+        return false;  // cancelled
+    }
+    std::string loc = entry_text(loc_entry);
+    int kind_active = gtk_combo_box_get_active(GTK_COMBO_BOX(kind_combo));
+    std::string cond = entry_text(cond_entry);
+    int ignore = gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(ignore_spin));
+    std::string logmsg = entry_text(log_entry);
+    std::string group = entry_text(group_entry);
+    gtk_widget_destroy(d);
+
+    std::string file;
+    int line = 0;
+    std::string func;
+    if (!parse_breakpoint_location(loc, file, line, func)) {
+        show_error(parent,
+                   "not a breakpoint location (need file:line or "
+                   "function): " +
+                       loc);
+        return false;
+    }
+    if (kind_active == 1 && cond.empty()) {
+        show_error(parent,
+                   "a conditional breakpoint needs a condition "
+                   "(e.g. i == 5).");
+        return false;
+    }
+    if (kind_active == 2 && logmsg.empty()) {
+        show_error(parent,
+                   "a logpoint needs a log message (e.g. i={i}).");
+        return false;
+    }
+    bp.location = loc;
+    bp.file = file;
+    bp.line = line;
+    bp.function = func;
+    bp.kind = kind_active == 1
+                  ? BpKind::Conditional
+                  : (kind_active == 2 ? BpKind::Logpoint : BpKind::Plain);
+    bp.condition = cond;
+    bp.ignore_count = ignore;
+    bp.log_message = logmsg;
+    bp.group = group;
+    return true;
+}
+
+static void on_bp_add_full_clicked(GtkButton*, gpointer) {
+    std::string err;
+    if (!ensure_session(err)) return;
+    Breakpoint bp;
+    bp.location = entry_text(g_bp_entry);
+    if (!breakpoint_edit_dialog(g_dbg_window, "Add Breakpoint", bp, true))
+        return;
+    if (!g_session->is_alive()) {
+        if (!g_session->stage_breakpoint_opts(bp.location, bp)) {
+            show_error(g_dbg_window,
+                       "not a breakpoint location (need file:line or "
+                       "function): " +
+                           bp.location);
+            return;
+        }
+    } else {
+        Breakpoint out;
+        if (!g_session->add_breakpoint_opts(bp.location, bp, out, err)) {
+            show_error(g_dbg_window, err);
+            return;
+        }
+    }
+    g_session->save_breakpoints();
+    gtk_entry_set_text(GTK_ENTRY(g_bp_entry), "");
+    sync_ui_from_session();
+}
+
+static void on_bp_edit_clicked(GtkButton*, gpointer) {
+    if (!g_session) return;
+    GtkTreeSelection* sel = gtk_tree_view_get_selection(
+        GTK_TREE_VIEW(g_object_get_data(G_OBJECT(g_dbg_window), "bp_view")));
+    GtkTreeModel* model = nullptr;
+    GtkTreeIter it;
+    if (!gtk_tree_selection_get_selected(sel, &model, &it)) return;
+    int id = 0;
+    gtk_tree_model_get(model, &it, 0, &id, -1);
+    // Find the breakpoint: by gdb id when live, by list position when
+    // staged (staged entries all share id 0).
+    Breakpoint* target = nullptr;
+    auto& bps = const_cast<std::vector<Breakpoint>&>(
+        g_session->breakpoints());
+    if (id > 0) {
+        for (auto& b : bps)
+            if (b.id == id) target = &b;
+    } else {
+        GtkTreePath* tp = gtk_tree_model_get_path(model, &it);
+        int idx = tp ? gtk_tree_path_get_indices(tp)[0] : -1;
+        if (tp) gtk_tree_path_free(tp);
+        if (idx >= 0 && idx < (int)bps.size()) target = &bps[idx];
+    }
+    if (!target) return;
+    Breakpoint edited = *target;
+    if (!breakpoint_edit_dialog(g_dbg_window, "Edit Breakpoint", edited,
+                                false))
+        return;
+    std::string err;
+    Breakpoint out;
+    if (!g_session->update_breakpoint(target->id, edited, out, err)) {
+        show_error(g_dbg_window, err);
+        return;
+    }
     g_session->save_breakpoints();
     sync_ui_from_session();
 }
@@ -350,15 +587,23 @@ static void on_bp_toggled(GtkCellRendererToggle*, gchar* path, gpointer) {
     gtk_tree_model_get(GTK_TREE_MODEL(g_bp_store), &it, 0, &id, 2, &enabled,
                        -1);
     std::string err;
-    if (g_session->is_alive()) {
+    if (g_session->is_alive() && id > 0) {
         if (!g_session->enable_breakpoint(id, !enabled, err)) {
             show_error(g_dbg_window, err);
             return;
         }
     } else {
-        for (auto& b : const_cast<std::vector<Breakpoint>&>(
-                 g_session->breakpoints()))
-            if (b.id == id) b.enabled = !enabled;
+        // gdb down, or a staged breakpoint (id 0): toggle by list
+        // position — staged entries all share id 0, so the id alone
+        // cannot tell them apart.
+        int idx = std::atoi(path);
+        auto& bps = const_cast<std::vector<Breakpoint>&>(
+            g_session->breakpoints());
+        if (idx >= 0 && idx < (int)bps.size())
+            bps[idx].enabled = !enabled;
+        else if (id > 0)
+            for (auto& b : bps)
+                if (b.id == id) b.enabled = !enabled;
     }
     g_session->save_breakpoints();
     sync_ui_from_session();
@@ -612,21 +857,39 @@ void debugger_window_open(GtkWidget* parent) {
         g_signal_connect(add, "clicked", G_CALLBACK(on_bp_add_clicked),
                          nullptr);
         gtk_box_pack_start(GTK_BOX(row), add, FALSE, FALSE, 0);
+        GtkWidget* add_full = gtk_button_new_with_label("Add…");
+        gtk_widget_set_tooltip_text(
+            add_full, "Add a breakpoint with handler options: conditional, "
+                      "ignore count, logpoint, group");
+        g_signal_connect(add_full, "clicked",
+                         G_CALLBACK(on_bp_add_full_clicked), nullptr);
+        gtk_box_pack_start(GTK_BOX(row), add_full, FALSE, FALSE, 0);
+        GtkWidget* edit = gtk_button_new_with_label("Edit…");
+        gtk_widget_set_tooltip_text(
+            edit, "Edit the selected breakpoint's type, condition, "
+                  "ignore count, log message or group");
+        g_signal_connect(edit, "clicked", G_CALLBACK(on_bp_edit_clicked),
+                         nullptr);
+        gtk_box_pack_start(GTK_BOX(row), edit, FALSE, FALSE, 0);
         GtkWidget* del = gtk_button_new_with_label("Remove");
         g_signal_connect(del, "clicked", G_CALLBACK(on_bp_remove_clicked),
                          nullptr);
         gtk_box_pack_start(GTK_BOX(row), del, FALSE, FALSE, 0);
-        g_bp_store = gtk_list_store_new(4, G_TYPE_INT, G_TYPE_STRING,
-                                        G_TYPE_BOOLEAN, G_TYPE_INT);
-        const char* cols[] = {"#", "Location", "Enabled", "Hits"};
-        GtkWidget* view = make_tree_view(g_bp_store, cols, 4, true);
+        g_bp_store = gtk_list_store_new(
+            8, G_TYPE_INT, G_TYPE_STRING, G_TYPE_BOOLEAN, G_TYPE_INT,
+            G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INT, G_TYPE_STRING);
+        const char* cols[] = {"#",     "Location", "Enabled", "Hits",
+                              "Type",  "Condition", "Ignore",  "Message"};
+        GtkWidget* view = make_tree_view(g_bp_store, cols, 8, true);
         g_object_set_data(G_OBJECT(win), "bp_view", view);
         GtkWidget* sc = gtk_scrolled_window_new(nullptr, nullptr);
         gtk_container_add(GTK_CONTAINER(sc), view);
         gtk_box_pack_start(GTK_BOX(box), sc, TRUE, TRUE, 0);
         gtk_box_pack_start(GTK_BOX(box),
                            gtk_label_new("Breakpoints (toggle Enabled to "
-                                         "enable/disable)"),
+                                         "enable/disable; Add… / Edit… for "
+                                         "conditional, ignore-count and "
+                                         "logpoint handlers)"),
                            FALSE, FALSE, 0);
     }
 

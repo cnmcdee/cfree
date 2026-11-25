@@ -249,6 +249,95 @@ static std::string trim_s(const std::string& s) {
     return s.substr(a, b - a + 1);
 }
 
+// ---------------------------------------------------------------- breakpoint
+// handlers
+
+const char* bp_kind_name(BpKind kind) {
+    switch (kind) {
+        case BpKind::Conditional: return "conditional";
+        case BpKind::Logpoint: return "logpoint";
+        case BpKind::Plain: break;
+    }
+    return "plain";
+}
+
+bool bp_kind_from_name(const std::string& name, BpKind& kind) {
+    if (name == "plain") kind = BpKind::Plain;
+    else if (name == "conditional" || name == "cond")
+        kind = BpKind::Conditional;
+    else if (name == "logpoint" || name == "log" || name == "dprintf")
+        kind = BpKind::Logpoint;
+    else
+        return false;
+    return true;
+}
+
+// Quote one argument as an MI C-string: "s" with \ and " escaped.
+static std::string mi_quote(const std::string& s) {
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '\\' || c == '"') out += '\\';
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
+bool logpoint_to_printf(const std::string& tmpl, std::string& fmt,
+                        std::vector<std::string>& args) {
+    fmt.clear();
+    args.clear();
+    for (size_t i = 0; i < tmpl.size();) {
+        char c = tmpl[i];
+        if (c == '%') {
+            fmt += "%%";  // literal % must not become a format directive
+            ++i;
+            continue;
+        }
+        if (c != '{') {
+            fmt += c;
+            ++i;
+            continue;
+        }
+        size_t close = tmpl.find('}', i + 1);
+        if (close == std::string::npos) return false;  // unbalanced {
+        std::string inner = tmpl.substr(i + 1, close - i - 1);
+        if (trim_s(inner).empty()) return false;  // empty {}
+        // Optional one-letter format prefix before the first colon:
+        // {s:name} -> %s. Anything else (including a:b ternaries and
+        // a::b qualified names) is the whole expression, printed %d.
+        std::string spec = "%d";
+        std::string expr = inner;
+        size_t colon = inner.find(':');
+        if (colon == 1) {
+            const char* m = nullptr;
+            switch (inner[0]) {
+                case 'd': m = "%d"; break;
+                case 's': m = "%s"; break;
+                case 'f': m = "%f"; break;
+                case 'x': m = "%#x"; break;
+                case 'p': m = "%p"; break;
+                default: break;
+            }
+            if (m) {
+                spec = m;
+                expr = inner.substr(2);
+            }
+        }
+        expr = trim_s(expr);
+        if (expr.empty()) return false;
+        fmt += spec;
+        args.push_back(expr);
+        i = close + 1;
+    }
+    // dprintf output without a trailing newline would run into gdb's own
+    // console output; terminate the message (fmt holds a literal \n as
+    // backslash+n, which gdb's console parser turns into a newline).
+    if (fmt.size() < 2 || fmt.compare(fmt.size() - 2, 2, "\\n") != 0)
+        fmt += "\\n";
+    return true;
+}
+
 bool DebuggerSettings::save(const std::string& path) const {
     std::string p = path.empty() ? default_path() : path;
     ensure_parent_dir(p);
@@ -364,7 +453,7 @@ void GdbSession::shutdown() {
     if (gdb_pid_ > 0) {
         if (gdb_stdin_ >= 0) {
             std::string bye = "-gdb-exit\n";
-            ::write(gdb_stdin_, bye.data(), bye.size());
+            (void)::write(gdb_stdin_, bye.data(), bye.size());
         }
         // Give gdb a moment, then SIGKILL the group if it lingers.
         for (int i = 0; i < 10; ++i) {
@@ -624,16 +713,15 @@ bool GdbSession::start(const std::string& executable, const std::string& args,
         MiValue r;
         if (!command("-exec-arguments " + args, r, err)) return false;
     }
-    // Re-apply saved breakpoints (restart keeps them).
+    // Re-apply saved breakpoints (restart keeps them), with their full
+    // handler options (conditional / logpoint / ignore count / group).
     std::vector<Breakpoint> old = bps_;
     bps_.clear();
     for (auto& b : old) {
         Breakpoint nb;
         std::string e;
-        if (add_breakpoint(b.location, nb, e)) {
-            nb.enabled = b.enabled;
-            if (!b.enabled) enable_breakpoint(nb.id, false, e);
-        }
+        add_breakpoint_opts(b.location, b, nb, e);  // best effort: a stale
+        // location must not abort the run
     }
     if (settings_.break_on_main || settings_.stop_on_entry) {
         Breakpoint bp;
@@ -741,23 +829,65 @@ bool GdbSession::wait_for_stop(int timeout_ms) {
 // ---------------------------------------------------------------- breakpoints
 
 bool GdbSession::stage_breakpoint(const std::string& location) {
+    return stage_breakpoint_opts(location, Breakpoint());
+}
+
+bool GdbSession::stage_breakpoint_opts(const std::string& location,
+                                       const Breakpoint& opts) {
     std::string file;
     int line = 0;
     std::string func;
     if (!parse_breakpoint_location(location, file, line, func)) return false;
-    for (const auto& b : bps_)
-        if (b.location == location) return true;
-    Breakpoint b;
+    Breakpoint b = opts;
     b.location = location;
     b.file = file;
     b.line = line;
     b.function = func;
+    b.id = 0;  // not in gdb yet
+    // A condition without an explicit kind is a conditional breakpoint.
+    if (b.kind == BpKind::Plain && !b.condition.empty())
+        b.kind = BpKind::Conditional;
+    for (auto& old : bps_) {
+        if (old.location != location) continue;
+        if (old.id == 0) {
+            old = b;  // re-stage: replace the staged entry's options
+            return true;
+        }
+        return true;  // live breakpoint at this location: leave it alone
+    }
     bps_.push_back(b);
     return true;
 }
 
 bool GdbSession::add_breakpoint(const std::string& location, Breakpoint& out,
                                 std::string& err) {
+    return add_breakpoint_opts(location, Breakpoint(), out, err);
+}
+
+// Apply condition (-break-condition) and ignore count (-break-after) to a
+// breakpoint that already exists in gdb. The condition is MI-quoted, so
+// expressions with spaces or string literals survive the trip.
+bool GdbSession::apply_bp_options(int id, const Breakpoint& opts,
+                                  std::string& err) {
+    MiValue r;
+    if (!opts.condition.empty()) {
+        if (!command("-break-condition " + std::to_string(id) + " " +
+                         mi_quote(opts.condition),
+                     r, err))
+            return false;
+    }
+    if (opts.ignore_count > 0) {
+        if (!command("-break-after " + std::to_string(id) + " " +
+                         std::to_string(opts.ignore_count),
+                     r, err))
+            return false;
+    }
+    return true;
+}
+
+bool GdbSession::add_breakpoint_opts(const std::string& location,
+                                     const Breakpoint& opts, Breakpoint& out,
+                                     std::string& err) {
     std::string file;
     int line = 0;
     std::string func;
@@ -766,12 +896,82 @@ bool GdbSession::add_breakpoint(const std::string& location, Breakpoint& out,
               location;
         return false;
     }
-    MiValue r;
-    if (!command("-break-insert " + location, r, err)) return false;
-    const MiValue* bk = r.get("bkpt");
+    Breakpoint want = opts;
+    want.location = location;
+    if (want.kind == BpKind::Plain && !want.condition.empty())
+        want.kind = BpKind::Conditional;
+    if (want.kind == BpKind::Conditional &&
+        trim_s(want.condition).empty()) {
+        err = "conditional breakpoint needs a condition";
+        return false;
+    }
+    if (want.kind == BpKind::Logpoint && trim_s(want.log_message).empty()) {
+        err = "logpoint needs a log message";
+        return false;
+    }
+    if (want.ignore_count < 0) want.ignore_count = 0;
+
     Breakpoint b;
     b.location = location;
     b.enabled = true;
+    if (want.kind == BpKind::Logpoint) {
+        // Logpoint = gdb dprintf: prints and never stops. There is no MI
+        // -break-insert flag for it, so create it through the console
+        // interpreter: dprintf LOC,"FMT", arg, ...  The whole console
+        // command is one MI-quoted string; mi_quote escapes the quotes
+        // and backslashes inside it, and the \n in the format survives
+        // as a gdb string escape. The ^done reply carries no breakpoint
+        // number, so find the new dprintf entry with a re-list.
+        std::string fmt;
+        std::vector<std::string> args;
+        if (!logpoint_to_printf(want.log_message, fmt, args)) {
+            err = "bad log message template (unbalanced {braces} or empty "
+                  "{}) : " +
+                  want.log_message;
+            return false;
+        }
+        std::string console_cmd = "dprintf " + location + ",\"" + fmt + "\"";
+        for (const auto& a : args) console_cmd += ", " + a;
+        std::vector<int> before;
+        for (const auto& old : bps_) before.push_back(old.id);
+        MiValue r;
+        if (!command("-interpreter-exec console " + mi_quote(console_cmd),
+                     r, err))
+            return false;
+        if (!refresh_breakpoints(err)) return false;
+        Breakpoint* found = nullptr;
+        for (auto& cand : bps_) {
+            if (cand.kind != BpKind::Logpoint) continue;
+            bool is_new = std::find(before.begin(), before.end(),
+                                    cand.id) == before.end();
+            if (is_new && (!found || cand.id > found->id)) found = &cand;
+        }
+        if (!found) {
+            err = "logpoint was created but gdb did not list it";
+            return false;
+        }
+        // Condition / ignore count also apply to dprintf breakpoints.
+        if (!apply_bp_options(found->id, want, err)) {
+            std::string e2;
+            remove_breakpoint(found->id, e2);  // roll back
+            return false;
+        }
+        found->condition = want.condition;
+        found->ignore_count = want.ignore_count;
+        found->log_message = want.log_message;
+        found->group = want.group;
+        if (!want.enabled) {
+            std::string e2;
+            enable_breakpoint(found->id, false, e2);
+            found->enabled = false;
+        }
+        out = *found;
+        return true;
+    }
+
+    MiValue r;
+    if (!command("-break-insert " + location, r, err)) return false;
+    const MiValue* bk = r.get("bkpt");
     if (bk) {
         b.id = std::atoi(bk->get_str("number", "0").c_str());
         b.file = bk->get_str("fullname");
@@ -795,14 +995,97 @@ bool GdbSession::add_breakpoint(const std::string& location, Breakpoint& out,
         err = "gdb did not return a breakpoint number";
         return false;
     }
-    // Replace any existing entry with the same id/location.
+    b.kind = want.kind;
+    b.condition = want.condition;
+    b.ignore_count = want.ignore_count;
+    b.log_message = want.log_message;
+    b.group = want.group;
+    // Replace any existing entry with the same id.
     for (auto& old : bps_)
         if (old.id == b.id) old = b;
     bool found = false;
     for (auto& old : bps_)
         if (old.id == b.id) found = true;
     if (!found) bps_.push_back(b);
+    // gdb validates the condition here (unknown variable -> ^error);
+    // roll the breakpoint back so a bad condition leaves nothing behind.
+    if (!apply_bp_options(b.id, want, err)) {
+        std::string e2;
+        remove_breakpoint(b.id, e2);
+        return false;
+    }
+    if (!want.enabled) {
+        std::string e2;
+        enable_breakpoint(b.id, false, e2);
+        b.enabled = false;
+        for (auto& old : bps_)
+            if (old.id == b.id) old.enabled = false;
+    }
     out = b;
+    return true;
+}
+
+bool GdbSession::update_breakpoint(int id, const Breakpoint& opts,
+                                   Breakpoint& out, std::string& err) {
+    Breakpoint* cur = nullptr;
+    for (auto& b : bps_)
+        if (b.id == id) {
+            cur = &b;
+            break;
+        }
+    if (!cur) {
+        // Staged entry (id 0): match by location and update in place.
+        for (auto& b : bps_)
+            if (b.id == 0 && b.location == opts.location) {
+                cur = &b;
+                break;
+            }
+        if (!cur) {
+            err = "no breakpoint with id " + std::to_string(id);
+            return false;
+        }
+        Breakpoint want = opts;
+        want.location = cur->location;  // location is not editable here
+        want.id = 0;
+        want.file = cur->file;
+        want.line = cur->line;
+        want.function = cur->function;
+        want.hits = cur->hits;
+        if (want.kind == BpKind::Plain && !want.condition.empty())
+            want.kind = BpKind::Conditional;
+        *cur = want;
+        out = *cur;
+        return true;
+    }
+    if (!is_alive()) {
+        // gdb is down: keep the entry, options included, for start().
+        Breakpoint want = opts;
+        want.location = cur->location;
+        want.id = cur->id;
+        want.file = cur->file;
+        want.line = cur->line;
+        want.function = cur->function;
+        want.hits = cur->hits;
+        if (want.kind == BpKind::Plain && !want.condition.empty())
+            want.kind = BpKind::Conditional;
+        *cur = want;
+        out = *cur;
+        return true;
+    }
+    // Live: a kind change needs a new breakpoint (a plain breakpoint
+    // cannot become a dprintf in place), so delete + re-insert at the
+    // same location. The gdb id may change; `out` carries the new one.
+    std::string loc = cur->location;
+    Breakpoint want = opts;
+    want.location = loc;
+    std::string e;
+    if (!remove_breakpoint(id, e)) {
+        err = e;
+        return false;
+    }
+    Breakpoint nb;
+    if (!add_breakpoint_opts(loc, want, nb, err)) return false;
+    out = nb;
     return true;
 }
 
@@ -853,12 +1136,95 @@ bool GdbSession::refresh_breakpoints(std::string& err) {
                                      : b.file + ":" + std::to_string(b.line);
                 }
                 b.hits = std::atoi(bk->get_str("times", "0").c_str());
+                // Handler fields straight from gdb: dprintf breakpoints
+                // report type="dprintf"; conditions and the remaining
+                // ignore count come back as cond=/ignore=. (gdb drops
+                // `ignore` once the count is spent, so a missing field
+                // means 0 remaining. The log template itself is not
+                // reported — it is merged back from our own record below.)
+                std::string type = bk->get_str("type");
+                b.condition = bk->get_str("cond");
+                b.ignore_count =
+                    std::atoi(bk->get_str("ignore", "0").c_str());
+                if (type == "dprintf") b.kind = BpKind::Logpoint;
+                else if (!b.condition.empty()) b.kind = BpKind::Conditional;
                 fresh.push_back(b);
             }
         }
     }
-    bps_ = fresh;
+    // Merge: gdb is authoritative for kind/condition/ignore/hits, but
+    // our own records keep the log template and group (gdb cannot
+    // report them). Staged entries (id 0, not in gdb yet) are kept.
+    std::vector<Breakpoint> merged;
+    for (auto& f : fresh) {
+        for (const auto& old : bps_) {
+            if (old.id != f.id) continue;
+            f.log_message = old.log_message;
+            f.group = old.group;
+            if (f.condition.empty()) f.condition = old.condition;
+            break;
+        }
+        merged.push_back(f);
+    }
+    for (const auto& old : bps_)
+        if (old.id == 0) merged.push_back(old);
+    bps_ = merged;
     return true;
+}
+
+// Escape one persistence field: \ -> \\, | -> \|, newline -> \n, CR -> \r.
+static std::string bps_escape(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '|': out += "\\|"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+static std::string bps_unescape(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char c = s[++i];
+            switch (c) {
+                case 'n': out += '\n'; break;
+                case 'r': out += '\r'; break;
+                default: out += c; break;  // \\ and \| (and anything else)
+            }
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+// Split a persistence line on unescaped '|' (escapes stay in the parts
+// for bps_unescape to handle).
+static std::vector<std::string> bps_split(const std::string& line) {
+    std::vector<std::string> parts;
+    std::string cur;
+    for (size_t i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (c == '\\' && i + 1 < line.size()) {
+            cur += c;
+            cur += line[++i];
+            continue;
+        }
+        if (c == '|') {
+            parts.push_back(cur);
+            cur.clear();
+            continue;
+        }
+        cur += c;
+    }
+    parts.push_back(cur);
+    return parts;
 }
 
 bool GdbSession::save_breakpoints(const std::string& path) const {
@@ -866,8 +1232,12 @@ bool GdbSession::save_breakpoints(const std::string& path) const {
     ensure_parent_dir(p);
     std::ofstream f(p);
     if (!f) return false;
+    f << "# location|enabled|kind|condition|ignore|log_message|group\n";
     for (const auto& b : bps_)
-        f << b.location << "|" << (b.enabled ? "1" : "0") << "\n";
+        f << bps_escape(b.location) << "|" << (b.enabled ? "1" : "0") << "|"
+          << bp_kind_name(b.kind) << "|" << bps_escape(b.condition) << "|"
+          << b.ignore_count << "|" << bps_escape(b.log_message) << "|"
+          << bps_escape(b.group) << "\n";
     return (bool)f;
 }
 
@@ -880,11 +1250,22 @@ bool GdbSession::load_breakpoints(const std::string& path) {
     while (std::getline(f, line)) {
         std::string t = trim_s(line);
         if (t.empty() || t[0] == '#') continue;
-        size_t bar = t.find('|');
+        std::vector<std::string> parts = bps_split(t);
         Breakpoint b;
-        b.location = bar == std::string::npos ? t : t.substr(0, bar);
-        b.enabled = bar == std::string::npos ||
-                    t.substr(bar + 1) != "0";
+        b.location = bps_unescape(parts[0]);
+        b.enabled = parts.size() < 2 || parts[1] != "0";
+        if (parts.size() >= 3 && !parts[2].empty()) {
+            BpKind k;
+            if (bp_kind_from_name(parts[2], k)) b.kind = k;
+        }
+        if (parts.size() >= 4) b.condition = bps_unescape(parts[3]);
+        if (parts.size() >= 5) b.ignore_count = std::atoi(parts[4].c_str());
+        if (parts.size() >= 6) b.log_message = bps_unescape(parts[5]);
+        if (parts.size() >= 7) b.group = bps_unescape(parts[6]);
+        // A condition without an explicit kind is a conditional
+        // breakpoint (also covers hand-edited files).
+        if (b.kind == BpKind::Plain && !b.condition.empty())
+            b.kind = BpKind::Conditional;
         bps_.push_back(b);
     }
     return true;
@@ -998,3 +1379,4 @@ void GdbSession::refresh_on_stop() {
     list_frames(frames_, err);
     refresh_watches(err);
 }
+

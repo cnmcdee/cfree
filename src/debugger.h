@@ -9,10 +9,24 @@
 // several locations (e.g. a one-line function body); the breakpoint id
 // reported is the parent number.
 //
+// Breakpoint handlers: every breakpoint carries a kind — plain, conditional
+// (stops only when a gdb expression is true, via -break-condition) or
+// logpoint (a gdb dprintf: prints a message and never stops). Any kind may
+// also carry an ignore count (first N hits are skipped, via -break-after;
+// gdb counts every reach, ignored or not, in the breakpoint's `times`
+// hit count) and a group label. A logpoint message is a template:
+// literal text plus {expr} placeholders, printed as integers by default;
+// {s:expr} prints a string, {f:expr} a float, {x:expr} hex, {p:expr} a
+// pointer. A conditional breakpoint's `times` counts stops only — reaches
+// where the condition is false are not hits at all.
+//
 // Settings live in ~/.config/fdesigner/debugger.conf (key=value, see
 // DebuggerSettings::save/load). FDESIGNER_DEBUGGER_CONF overrides the
 // path (used by tests). Breakpoints are persisted per session in
-// ~/.config/fdesigner/debugger_bps.conf (location|enabled per line).
+// ~/.config/fdesigner/debugger_bps.conf, one per line:
+//   location|enabled|kind|condition|ignore|log_message|group
+// (\, | and newline inside fields are backslash-escaped.) Old two-field
+// lines (location|enabled) still load as plain breakpoints.
 #pragma once
 
 #include <string>
@@ -34,6 +48,15 @@ struct DebuggerSettings {
     bool load(const std::string& path = "");
 };
 
+// What a breakpoint does when its location is reached.
+enum class BpKind { Plain, Conditional, Logpoint };
+
+// Display name for a breakpoint kind ("plain"/"conditional"/"logpoint").
+const char* bp_kind_name(BpKind kind);
+// Parse a kind name; accepts "plain", "conditional"/"cond",
+// "logpoint"/"log"/"dprintf". Returns false for anything else.
+bool bp_kind_from_name(const std::string& name, BpKind& kind);
+
 struct Breakpoint {
     int id = 0;                    // gdb breakpoint number
     std::string location;          // as requested: "file:line" or "func"
@@ -41,7 +64,13 @@ struct Breakpoint {
     int line = 0;                  // resolved line (0 if by function)
     std::string function;          // resolved function (may be empty)
     bool enabled = true;
-    int hits = 0;
+    int hits = 0;                  // gdb `times`: reaches (conditional: stops)
+    // Multiple-handler fields (see the header comment above).
+    BpKind kind = BpKind::Plain;
+    std::string condition;         // conditional: gdb expression, e.g. "i == 5"
+    int ignore_count = 0;          // skip the first N hits (-break-after)
+    std::string log_message;       // logpoint template, e.g. "i={i} sum={sum}"
+    std::string group;             // optional group label (organisation only)
 };
 
 struct Variable {
@@ -91,6 +120,13 @@ std::string mi_unescape(const std::string& s);
 // the text is not a plausible location (empty, no colon/function chars).
 bool parse_breakpoint_location(const std::string& text, std::string& file,
                                int& line, std::string& function);
+// Convert a logpoint message template ("reached loop, i={i} name={s:name}")
+// to a gdb printf format string plus the argument expressions, in order.
+// {expr} prints as %d; {s:expr} %s, {f:expr} %f, {x:expr} %#x, {p:expr} %p.
+// Literal % in the template is escaped to %%. Returns false on an
+// unbalanced brace or an empty placeholder. Exposed for tests.
+bool logpoint_to_printf(const std::string& tmpl, std::string& fmt,
+                        std::vector<std::string>& args);
 
 class GdbSession {
 public:
@@ -141,10 +177,30 @@ public:
     // before Run); start() inserts it into gdb. Returns false if the
     // location does not parse.
     bool stage_breakpoint(const std::string& location);
+    // As above, with handler options (kind/condition/ignore/log/group).
+    // Replaces the options of an already-staged entry at the same
+    // location; a live breakpoint at the location is left alone.
+    bool stage_breakpoint_opts(const std::string& location,
+                               const Breakpoint& opts);
     bool add_breakpoint(const std::string& location, Breakpoint& out,
                         std::string& err);
+    // As above, with handler options. A conditional breakpoint needs a
+    // non-empty condition, a logpoint a non-empty message; gdb validates
+    // the condition expression (unknown variable -> error, and the
+    // breakpoint is rolled back). The breakpoint is created disabled
+    // when opts.enabled is false.
+    bool add_breakpoint_opts(const std::string& location,
+                             const Breakpoint& opts, Breakpoint& out,
+                             std::string& err);
     bool remove_breakpoint(int id, std::string& err);
     bool enable_breakpoint(int id, bool enable, std::string& err);
+    // Replace a breakpoint's handler options (location is unchanged).
+    // Live: delete + re-insert with the new options (the gdb id may
+    // change; `out` carries the new breakpoint). Staged (id 0, gdb not
+    // running): updated in place. Returns false + err when the id is
+    // unknown or gdb rejects the new options.
+    bool update_breakpoint(int id, const Breakpoint& opts, Breakpoint& out,
+                           std::string& err);
     bool refresh_breakpoints(std::string& err);  // re-list from gdb
     const std::vector<Breakpoint>& breakpoints() const { return bps_; }
     // Breakpoints kept across sessions (saved to disk by the UI).
@@ -168,6 +224,8 @@ public:
     void refresh_on_stop();
 
     // Output accumulated so far (target stdout/stderr + gdb console text).
+    // Logpoint (dprintf) output arrives on gdb's console stream, so it
+    // lands in gdb_log(), not target_output().
     const std::string& target_output() const { return target_output_; }
     const std::string& gdb_log() const { return gdb_log_; }
     void clear_output() { target_output_.clear(); gdb_log_.clear(); }
@@ -188,6 +246,9 @@ private:
     // Send an -exec-* command; move to Running unless a fresh *stopped
     // arrived while waiting for the ^running reply (see debugger.cpp).
     bool issue_exec(const std::string& mi_cmd, std::string& err);
+    // Apply a breakpoint's condition (-break-condition) and ignore count
+    // (-break-after) to a breakpoint that already exists in gdb.
+    bool apply_bp_options(int id, const Breakpoint& opts, std::string& err);
 
     DebuggerSettings settings_;
     unsigned long stop_seq_ = 0;  // incremented on every *stopped event

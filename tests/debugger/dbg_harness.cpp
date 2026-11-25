@@ -515,6 +515,202 @@ static void console_tests() {
              sess2.breakpoints()[1].location == "compute";
         report("bps_persist_to_disk", ok, "");
     }
+    // 31. conditional breakpoint: fires only when i == 2, never before
+    {
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.kind = BpKind::Conditional;
+        opts.condition = "i == 2";
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_LOOP), opts);
+        ok = ok && sess.start(console, "", err);
+        ok = ok && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Stopped &&
+             sess.last_stop().reason == "breakpoint-hit" &&
+             sess.last_stop().frame.line == L_LOOP;
+        std::string v, e;
+        ok = ok && sess.evaluate("i", v, e) && v == "2";
+        // It must NOT have stopped at i=0/1: both iterations printed
+        // before the first (and only) stop.
+        ok = ok && sess.target_output().find("i=0 x=1 sum=1") !=
+                         std::string::npos &&
+             sess.target_output().find("i=1 x=3 sum=4") != std::string::npos;
+        // Hit count from gdb: a conditional breakpoint counts stops
+        // only (reaches with a false condition are not hits) -> 1.
+        ok = ok && sess.refresh_breakpoints(err);
+        int hits = -1;
+        for (const auto& b : sess.breakpoints())
+            if (b.line == L_LOOP) hits = b.hits;
+        ok = ok && hits == 1;
+        ok = ok && sess.cont(err) && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Exited;
+        report("bp_conditional_only_when_true", ok,
+               "i=" + v + " hits=" + std::to_string(hits));
+    }
+    // 32. ignore count: first 2 hits skipped, stops on the 3rd (i == 2)
+    {
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.ignore_count = 2;
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_LOOP), opts);
+        ok = ok && sess.start(console, "", err);
+        ok = ok && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Stopped &&
+             sess.last_stop().frame.line == L_LOOP;
+        std::string v, e;
+        ok = ok && sess.evaluate("i", v, e) && v == "2";
+        ok = ok && sess.target_output().find("i=0 x=1 sum=1") !=
+                         std::string::npos &&
+             sess.target_output().find("i=1 x=3 sum=4") != std::string::npos;
+        // gdb counts every reach, ignored or not, in `times` -> 3.
+        ok = ok && sess.refresh_breakpoints(err);
+        int hits = -1;
+        for (const auto& b : sess.breakpoints())
+            if (b.line == L_LOOP) hits = b.hits;
+        ok = ok && hits == 3;
+        ok = ok && sess.cont(err) && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Exited;
+        report("bp_ignore_count_skips", ok,
+               "i=" + v + " hits=" + std::to_string(hits));
+    }
+    // 33. logpoint: prints its message at every hit, never stops
+    {
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.kind = BpKind::Logpoint;
+        opts.log_message = "LOG i={i}";
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_LOOP), opts);
+        ok = ok && sess.start(console, "", err);
+        ok = ok && sess.wait_for_stop(10000);
+        // No stop at all: straight to a clean exit.
+        ok = ok && sess.state() == DbgState::Exited &&
+             sess.exit_code() == 0;
+        // dprintf output arrives on gdb's console stream (-> gdb_log()).
+        ok = ok && sess.gdb_log().find("LOG i=0") != std::string::npos &&
+             sess.gdb_log().find("LOG i=1") != std::string::npos &&
+             sess.gdb_log().find("LOG i=2") != std::string::npos;
+        ok = ok && sess.target_output().find("DONE sum=9") !=
+                         std::string::npos;
+        report("bp_logpoint_prints_no_stop", ok, sess.gdb_log());
+    }
+    // 34. logpoint template with several placeholders and formats
+    {
+        // Template conversion is pure string work: check it directly.
+        std::string fmt;
+        std::vector<std::string> args;
+        bool ok = logpoint_to_printf("i={i} s={s:name} x={x:v}", fmt, args);
+        ok = ok && fmt == "i=%d s=%s x=%#x\\n" && args.size() == 3 &&
+             args[0] == "i" && args[1] == "name" && args[2] == "v";
+        ok = ok && logpoint_to_printf("100% done", fmt, args) &&
+             fmt == "100%% done\\n" && args.empty();
+        ok = ok && !logpoint_to_printf("oops {i", fmt, args);
+        ok = ok && !logpoint_to_printf("oops {}", fmt, args);
+        // And end to end: two placeholders print at the loop.
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.kind = BpKind::Logpoint;
+        opts.log_message = "LP i={i} sum={sum}";
+        ok = ok && sess.stage_breakpoint_opts(loc(src, L_LOOP), opts);
+        ok = ok && sess.start(console, "", err);
+        ok = ok && sess.wait_for_stop(10000);
+        ok = ok && sess.state() == DbgState::Exited;
+        ok = ok && sess.gdb_log().find("LP i=0 sum=0") != std::string::npos &&
+             sess.gdb_log().find("LP i=2 sum=4") != std::string::npos;
+        report("bp_logpoint_template", ok, sess.gdb_log());
+    }
+    // 35. edit a live breakpoint: plain -> conditional, takes effect
+    {
+        GdbSession sess;
+        std::string err;
+        sess.stage_breakpoint(loc(src, L_LOOP));
+        bool ok = sess.start(console, "", err);
+        ok = ok && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Stopped;
+        std::string v, e;
+        ok = ok && sess.evaluate("i", v, e) && v == "0";  // plain: stops at 0
+        int loop_id = 0;
+        for (const auto& b : sess.breakpoints())
+            if (b.line == L_LOOP) loop_id = b.id;
+        ok = ok && loop_id > 0;
+        Breakpoint upd;
+        upd.kind = BpKind::Conditional;
+        upd.condition = "i == 2";
+        upd.location = loc(src, L_LOOP);
+        Breakpoint out;
+        ok = ok && sess.update_breakpoint(loop_id, upd, out, err);
+        ok = ok && out.kind == BpKind::Conditional &&
+             out.condition == "i == 2";
+        ok = ok && sess.cont(err) && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Stopped &&
+             sess.last_stop().frame.line == L_LOOP;
+        ok = ok && sess.evaluate("i", v, e) && v == "2";
+        ok = ok && sess.cont(err) && sess.wait_for_stop();
+        ok = ok && sess.state() == DbgState::Exited;
+        report("bp_update_plain_to_conditional", ok, "i=" + v);
+    }
+    // 36. handler fields persist to disk and load back; old two-field
+    // files still load as plain breakpoints.
+    {
+        GdbSession sess;
+        Breakpoint c;
+        c.kind = BpKind::Conditional;
+        c.condition = "i == 2 || sum > 3";  // exercises | escaping
+        c.group = "loop";
+        Breakpoint l;
+        l.kind = BpKind::Logpoint;
+        l.log_message = "LOG i={i} | sum={sum}";
+        l.group = "trace";
+        Breakpoint p;
+        p.ignore_count = 3;
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_LOOP), c);
+        ok = ok && sess.stage_breakpoint_opts(loc(src, L_HELPER), l);
+        ok = ok && sess.stage_breakpoint_opts("compute", p);
+        ok = ok && sess.save_breakpoints("/tmp/dbgtest_bps2");
+        GdbSession sess2;
+        ok = ok && sess2.load_breakpoints("/tmp/dbgtest_bps2");
+        ok = ok && sess2.breakpoints().size() == 3;
+        if (ok) {
+            const auto& b0 = sess2.breakpoints()[0];
+            const auto& b1 = sess2.breakpoints()[1];
+            const auto& b2 = sess2.breakpoints()[2];
+            ok = b0.kind == BpKind::Conditional &&
+                 b0.condition == "i == 2 || sum > 3" && b0.group == "loop" &&
+                 b1.kind == BpKind::Logpoint &&
+                 b1.log_message == "LOG i={i} | sum={sum}" &&
+                 b1.group == "trace" && b2.kind == BpKind::Plain &&
+                 b2.ignore_count == 3 && b2.location == "compute";
+        }
+        // Old format: location|enabled, nothing else.
+        {
+            std::ofstream f("/tmp/dbgtest_bps_old");
+            f << loc(src, L_LOOP) << "|1\ncompute|0\n";
+        }
+        GdbSession sess3;
+        ok = ok && sess3.load_breakpoints("/tmp/dbgtest_bps_old");
+        ok = ok && sess3.breakpoints().size() == 2 &&
+             sess3.breakpoints()[0].kind == BpKind::Plain &&
+             sess3.breakpoints()[0].enabled &&
+             sess3.breakpoints()[1].kind == BpKind::Plain &&
+             !sess3.breakpoints()[1].enabled;
+        // A bad condition is rejected and leaves no breakpoint behind.
+        {
+            GdbSession s4;
+            std::string e2;
+            s4.start_gdb_only(e2);
+            s4.load_executable(console, e2);
+            Breakpoint bad;
+            bad.kind = BpKind::Conditional;
+            bad.condition = "nosuchvar == 2";
+            Breakpoint out;
+            ok = ok && !s4.add_breakpoint_opts(loc(src, L_LOOP), bad, out,
+                                               e2) &&
+                 !e2.empty() && s4.breakpoints().empty();
+        }
+        report("bp_handlers_persist_roundtrip", ok, "");
+    }
 }
 
 // ---- GTK tests (run under xvfb-run) ---------------------------------------
@@ -576,6 +772,46 @@ static void gtk_tests() {
         ok = ok && sess.state() == DbgState::Exited && sess.exit_code() == 0;
         ok = ok && sess.target_output().find("CLICKS=1") != std::string::npos;
         report("gtk_run_to_completion", ok, sess.target_output());
+    }
+    // 35. logpoint in the callback: prints, never stops, app exits 0
+    {
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.kind = BpKind::Logpoint;
+        opts.log_message = "CLICK counter={counter}";
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_CB), opts);
+        ok = ok && sess.start(app, "", err);
+        ok = ok && sess.wait_for_stop(15000);
+        ok = ok && sess.state() == DbgState::Exited && sess.exit_code() == 0;
+        ok = ok && sess.target_output().find("CLICKS=1") !=
+                         std::string::npos;
+        // At the callback entry counter is still 0 (the click has not
+        // been counted yet); the dprintf output is on gdb's console
+        // stream (-> gdb_log()).
+        ok = ok && sess.gdb_log().find("CLICK counter=0") !=
+                         std::string::npos;
+        report("gtk_logpoint_no_stop", ok, sess.gdb_log());
+    }
+    // 36. conditional breakpoint in the callback: fires when counter == 0
+    {
+        GdbSession sess;
+        std::string err;
+        Breakpoint opts;
+        opts.kind = BpKind::Conditional;
+        opts.condition = "counter == 0";
+        bool ok = sess.stage_breakpoint_opts(loc(src, L_CB), opts);
+        ok = ok && sess.start(app, "", err);
+        ok = ok && sess.wait_for_stop(15000);
+        ok = ok && sess.state() == DbgState::Stopped &&
+             sess.last_stop().reason == "breakpoint-hit" &&
+             sess.last_stop().frame.line == L_CB;
+        ok = ok && sess.cont(err) && sess.wait_for_stop(15000);
+        ok = ok && sess.state() == DbgState::Exited && sess.exit_code() == 0;
+        ok = ok && sess.target_output().find("CLICKS=1") !=
+                         std::string::npos;
+        report("gtk_conditional_in_callback", ok,
+               "reason=" + sess.last_stop().reason);
     }
 }
 
