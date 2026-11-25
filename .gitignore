@@ -1,0 +1,3 @@
+fdesigner
+*.o
+tests/gen_matrix
