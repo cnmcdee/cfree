@@ -2694,6 +2694,44 @@ static void open_code_view() {
             }),
             nullptr);
         gtk_widget_show_all(g_codeview_window);
+        // [round-3 integration] Park the code window beside the other
+        // top-level windows instead of stacking it exactly over the
+        // design window: its 1000x700 default at 0,0 hid the canvas and
+        // the menu bar, so palette clicks and the View menu could not
+        // reach the designer. First choice: right of the palette window
+        // when it is visible; else right of the design window; else
+        // below the design window; else a small cascade offset. Only
+        // parked on first creation — reopening keeps the user's spot.
+        while (gtk_events_pending()) gtk_main_iteration();
+        {
+            GdkRectangle mgeo = {0, 0, 1920, 1080};
+            GdkMonitor* mon = gdk_display_get_primary_monitor(
+                gdk_screen_get_display(gdk_screen_get_default()));
+            if (mon) gdk_monitor_get_geometry(mon, &mgeo);
+            gint mx = 0, my = 0, mw = 0, mh = 0;
+            gtk_window_get_position(GTK_WINDOW(g_window), &mx, &my);
+            gtk_window_get_size(GTK_WINDOW(g_window), &mw, &mh);
+            gint right = mx + mw;
+            if (g_palette_window &&
+                gtk_widget_get_visible(g_palette_window)) {
+                gint ppx = 0, ppw = 0;
+                gtk_window_get_position(GTK_WINDOW(g_palette_window),
+                                        &ppx, nullptr);
+                gtk_window_get_size(GTK_WINDOW(g_palette_window), &ppw,
+                                    nullptr);
+                if (ppx + ppw > right) right = ppx + ppw;
+            }
+            const gint cw = 1000, ch = 700;
+            gint cx = mx + 48, cy = my + 48;  // cascade fallback
+            if (right + 12 + cw <= mgeo.x + mgeo.width) {
+                cx = right + 12;
+                cy = my;
+            } else if (my + mh + 12 + ch <= mgeo.y + mgeo.height) {
+                cx = mx;
+                cy = my + mh + 12;
+            }
+            gtk_window_move(GTK_WINDOW(g_codeview_window), cx, cy);
+        }
     } else {
         gtk_widget_show(g_codeview_window);
         gtk_window_present(GTK_WINDOW(g_codeview_window));
@@ -4175,13 +4213,6 @@ int main(int argc, char** argv) {
     status("Phase 2 — pick a widget from the palette to place it");
     gtk_widget_show_all(g_window);
 
-    // The code window is a separate top-level window that opens
-    // together with the designer (View -> Code View toggles it).
-    open_code_view();
-    // Keep the code window's paused line + inspection pane in step
-    // with the shared debugger session (200 ms poll).
-    g_timeout_add(200, on_codewin_poll, nullptr);
-
     // Palette window: its own top-level window, opened together with the
     // designer and parked to the left of the design window (right if
     // there is no room on the left). Plain top-level, not transient or
@@ -4219,6 +4250,14 @@ int main(int argc, char** argv) {
         gtk_window_move(GTK_WINDOW(g_palette_window), px, my);
     }
 
+    // The code window is a separate top-level window that opens
+    // together with the designer (View -> Code View toggles it).
+    // It opens AFTER the palette window so open_code_view() can park it
+    // beside the palette instead of over the designer.
+    open_code_view();
+    // Keep the code window's paused line + inspection pane in step
+    // with the shared debugger session (200 ms poll).
+    g_timeout_add(200, on_codewin_poll, nullptr);
     if (std::getenv("FDESIGNER_OPEN_DEBUGGER") != nullptr)
         g_idle_add(+[](gpointer) -> gboolean {
                        debugger_window_open(g_window);

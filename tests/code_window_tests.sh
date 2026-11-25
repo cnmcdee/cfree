@@ -103,9 +103,29 @@ if ! command -v xdotool >/dev/null 2>&1 || ! command -v import >/dev/null 2>&1; 
     exit "$FAIL"
 fi
 
+# The self-test above runs under xvfb-run -a, which takes :99 first; its
+# server may still be shutting down when we get here. Wait for :99 to go
+# quiet before starting our own Xvfb, or our Xvfb fails to bind while the
+# readiness probe below still answers against the dying server.
+for _i in $(seq 1 50); do
+    DISPLAY="$XDISP" xdotool getdisplaygeometry >/dev/null 2>&1 || break
+    sleep 0.2
+done
 Xvfb $XDISP -screen 0 1920x1080x24 >/dev/null 2>&1 &
 XVPID=$!
-sleep 2
+# Wait until the display actually answers: a fixed sleep is not enough
+# on a loaded machine, and the app then dies with "cannot open display".
+for _i in $(seq 1 50); do
+    DISPLAY="$XDISP" xdotool getdisplaygeometry >/dev/null 2>&1 && break
+    sleep 0.2
+done
+DISPLAY="$XDISP" xdotool getdisplaygeometry >/dev/null 2>&1 || {
+    say "FAIL Xvfb $XDISP did not come up"; kill $XVPID 2>/dev/null; exit 1
+}
+kill -0 $XVPID 2>/dev/null || {
+    say "FAIL our Xvfb $XDISP died at startup (display taken?)"
+    exit 1
+}
 trap 'kill_app; kill $XVPID 2>/dev/null' EXIT
 
 # === Run A: breakpoint in main ============================================
