@@ -30,7 +30,7 @@ grep -E "GENERATED8" /tmp/events_selftest.log || true
 
 echo "== event generator test (all 36 widget types) =="
 if g++ -O2 -Wall -Wextra -std=c++17 -o /tmp/event_handler_tests \
-        tests/event_handler_tests.cpp src/generator.cpp src/project_io.cpp; then
+        tests/event_handler_tests.cpp src/generator.cpp src/cmake_build.cpp src/project_io.cpp; then
     rm -rf /tmp/fdesigner_events_gen
     if /tmp/event_handler_tests /tmp/fdesigner_events_gen; then
         ok event-markers

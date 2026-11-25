@@ -29,7 +29,7 @@ echo "== probe (generate + cmake configure/build + run + settings + failures) ==
 rc=$?
 note $rc
 
-echo "== designer self-test (includes CMake Phase 8) =="
+echo "== designer self-test (includes CMake Phase 9) =="
 FDESIGNER_SELFTEST=1 timeout 120 xvfb-run -a ./fdesigner > /tmp/fdesigner_cmake_selftest.log 2>&1
 rc=$?
 if [ $rc -eq 0 ] && grep -q "SELFTEST PASS" /tmp/fdesigner_cmake_selftest.log; then
