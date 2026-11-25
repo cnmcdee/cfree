@@ -60,7 +60,7 @@ else
         FOUND=""
         i=0
         while [ $i -lt 50 ]; do
-            FOUND=$(xdotool search --name "Code - generated C\+\+" 2>/dev/null | head -1)
+            FOUND=$(xdotool search --name "FDesigner — Code" 2>/dev/null | head -1)
             [ -n "$FOUND" ] && break
             sleep 0.2; i=$((i+1))
         done

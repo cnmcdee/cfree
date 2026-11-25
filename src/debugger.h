@@ -171,6 +171,9 @@ public:
     // Non-blocking drain of pending MI output (used by the GUI poll tick).
     void poll_events();
     const StopInfo& last_stop() const { return last_stop_; }
+    // Monotonic stop counter (incremented on every *stopped event).
+    // Lets a UI poll tell a fresh stop apart from a stale Stopped state.
+    unsigned long stop_seq() const { return stop_seq_; }
 
     // Breakpoints.
     // Remember a breakpoint before gdb is running (e.g. typed in the UI

@@ -287,10 +287,19 @@ struct CodeViewData {
     std::set<int> folded;       // 0-based region start lines
     std::set<int> breakpoints;  // 1-based file lines
     int current_line = 0;       // 1-based, 0 = none
+    int paused_line = 0;        // 1-based, 0 = none (debugger paused here)
     CodeTheme theme;
     std::function<bool(const std::string&, int)> bp_cb;
     GtkTextTag* fold_tag = nullptr;
     GtkTextTag* cur_tag = nullptr;
+    GtkTextTag* paused_tag = nullptr;
+    // Automatic inspection pane (bottom of the window).
+    CodeViewInspectState inspect_state = CodeViewInspectState::NoTarget;
+    std::string inspect_scope;
+    std::vector<Variable> inspect_vars;
+    GtkWidget* inspect_frame = nullptr;
+    GtkWidget* scope_label = nullptr;
+    GtkListStore* vars_store = nullptr;
 };
 
 CodeViewData* data_of(GtkWidget* cv) {
@@ -343,28 +352,107 @@ void apply_folds(CodeViewData* d) {
     }
 }
 
-void apply_current_line(CodeViewData* d) {
+// (Re)apply the current-line and paused-line tags. The paused tag has
+// higher priority than the current-line tag (set at creation), so when
+// both mark the same line the red paused background wins — exactly the
+// Lazarus distinction between "execution is here" and "current line".
+void apply_line_marks(CodeViewData* d) {
     GtkTextBuffer* buf =
         gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->view));
-    if (!d->cur_tag) return;
     GtkTextIter a, b;
     gtk_text_buffer_get_bounds(buf, &a, &b);
-    gtk_text_buffer_remove_tag(buf, d->cur_tag, &a, &b);
-    if (d->current_line >= 1 &&
-        d->current_line <= gtk_text_buffer_get_line_count(buf)) {
+    if (d->cur_tag) gtk_text_buffer_remove_tag(buf, d->cur_tag, &a, &b);
+    if (d->paused_tag)
+        gtk_text_buffer_remove_tag(buf, d->paused_tag, &a, &b);
+    auto apply_one = [&](GtkTextTag* tag, int line1) {
+        if (!tag || line1 < 1 ||
+            line1 > gtk_text_buffer_get_line_count(buf))
+            return;
         GtkTextIter sa, sb;
-        gtk_text_buffer_get_iter_at_line(buf, &sa, d->current_line - 1);
-        if (d->current_line < gtk_text_buffer_get_line_count(buf))
-            gtk_text_buffer_get_iter_at_line(buf, &sb, d->current_line);
+        gtk_text_buffer_get_iter_at_line(buf, &sa, line1 - 1);
+        if (line1 < gtk_text_buffer_get_line_count(buf))
+            gtk_text_buffer_get_iter_at_line(buf, &sb, line1);
         else
             gtk_text_buffer_get_end_iter(buf, &sb);
-        gtk_text_buffer_apply_tag(buf, d->cur_tag, &sa, &sb);
+        gtk_text_buffer_apply_tag(buf, tag, &sa, &sb);
+    };
+    apply_one(d->cur_tag, d->current_line);
+    if (d->paused_tag && d->paused_line >= 1) {
+        GtkTextTagTable* table = gtk_text_buffer_get_tag_table(buf);
+        gtk_text_tag_set_priority(
+            d->paused_tag, gtk_text_tag_table_get_size(table) - 1);
     }
+    apply_one(d->paused_tag, d->paused_line);
 }
+
+// The paused-line tag: solid red background, white text — readable on
+// any theme, unmistakable next to the theme's current-line highlight.
+// Created (or re-pointed) whenever the buffer's tags are (re)built.
+void ensure_paused_tag(CodeViewData* d, GtkTextBuffer* buf) {
+    GtkTextTagTable* table = gtk_text_buffer_get_tag_table(buf);
+    d->paused_tag = gtk_text_tag_table_lookup(table, "theme-paused-line");
+    if (!d->paused_tag)
+        d->paused_tag = gtk_text_buffer_create_tag(
+            buf, "theme-paused-line", "background", "#c00000",
+            "foreground", "white", NULL);
+    else
+        g_object_set(d->paused_tag, "background", "#c00000",
+                     "foreground", "white", NULL);
+    // Outrank every other tag on the line (current-line tag and any
+    // syntax tag): top priority in the table is always valid, while
+    // cur_priority+1 can exceed the table size when the current-line
+    // tag was created last.
+    gtk_text_tag_set_priority(
+        d->paused_tag, gtk_text_tag_table_get_size(table) - 1);
+}
+
+void apply_current_line(CodeViewData* d) { apply_line_marks(d); }
 
 void queue_redraw(CodeViewData* d) {
     gtk_widget_queue_draw(d->gutter);
     gtk_widget_queue_draw(d->view);
+}
+
+// Repaint the inspection pane from the stored snapshot. While the
+// target runs the pane shows the running state and NO values, so stale
+// locals are never presented as current.
+void refresh_inspection_ui(CodeViewData* d) {
+    if (!d->scope_label || !d->vars_store) return;
+    std::string scope;
+    switch (d->inspect_state) {
+        case CodeViewInspectState::NoTarget:
+            scope = "No target running \u2014 start the debugger to "
+                    "inspect variables.";
+            break;
+        case CodeViewInspectState::Running:
+            scope = "Running \u2014 variables will appear when the "
+                    "target stops.";
+            break;
+        case CodeViewInspectState::Stopped:
+            scope = d->inspect_scope.empty() ? "Stopped."
+                                             : d->inspect_scope;
+            break;
+        case CodeViewInspectState::Exited:
+            scope = d->inspect_scope.empty() ? "Target exited."
+                                             : d->inspect_scope;
+            break;
+    }
+    gtk_label_set_text(GTK_LABEL(d->scope_label), scope.c_str());
+    gtk_list_store_clear(d->vars_store);
+    if (d->inspect_state == CodeViewInspectState::Stopped) {
+        for (const auto& v : d->inspect_vars) {
+            GtkTreeIter it;
+            gtk_list_store_append(d->vars_store, &it);
+            gtk_list_store_set(d->vars_store, &it, 0, v.name.c_str(), 1,
+                               v.type.c_str(), 2, v.value.c_str(), -1);
+        }
+        if (d->inspect_vars.empty()) {
+            GtkTreeIter it;
+            gtk_list_store_append(d->vars_store, &it);
+            gtk_list_store_set(d->vars_store, &it, 0,
+                               "(no locals in scope)", 1, "", 2, "", -1);
+        }
+    }
 }
 
 bool region_starts_at(CodeViewData* d, int line0) {
@@ -437,7 +525,21 @@ gboolean on_gutter_draw(GtkWidget* gutter, cairo_t* cr, gpointer user) {
         gint y, h;
         gtk_text_view_get_line_yrange(GTK_TEXT_VIEW(d->view), &it, &y, &h);
         if (h <= 0) continue;  // folded away
-        if (d->current_line == ln + 1) {
+        bool paused = (d->paused_line == ln + 1);
+        if (paused) {
+            // Red gutter strip to match the red paused-line background.
+            cairo_set_source_rgb(cr, 0.75, 0.0, 0.0);
+            cairo_rectangle(cr, 0, y, alloc.width, h);
+            cairo_fill(cr);
+            // White right-pointing execution arrow (Lazarus-style).
+            double yc = y + h / 2.0;
+            cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+            cairo_move_to(cr, 14, yc - 5);
+            cairo_line_to(cr, 14, yc + 5);
+            cairo_line_to(cr, 22, yc);
+            cairo_close_path(cr);
+            cairo_fill(cr);
+        } else if (d->current_line == ln + 1) {
             cairo_set_source_rgb(cr, cr_, cg, cb);
             cairo_rectangle(cr, 0, y, alloc.width, h);
             cairo_fill(cr);
@@ -461,7 +563,10 @@ gboolean on_gutter_draw(GtkWidget* gutter, cairo_t* cr, gpointer user) {
         std::snprintf(num, sizeof num, "%d", ln + 1);
         cairo_text_extents_t ext;
         cairo_text_extents(cr, num, &ext);
-        cairo_set_source_rgba(cr, fr, fg, fb, 0.65);
+        if (paused)
+            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+        else
+            cairo_set_source_rgba(cr, fr, fg, fb, 0.65);
         cairo_move_to(cr, alloc.width - 6 - ext.width, y + h - 4);
         cairo_show_text(cr, num);
     }
@@ -499,7 +604,12 @@ void on_scroll_changed(GtkAdjustment*, gpointer user) {
 GtkWidget* codeview_new() {
     CodeViewData* d = new CodeViewData();
     d->theme = theme_current();
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    // Outer box is vertical: code area on top, automatic-inspection
+    // pane at the bottom. The inner box keeps the old horizontal
+    // gutter + text view layout.
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget* code_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_box_pack_start(GTK_BOX(box), code_box, TRUE, TRUE, 0);
     d->box = box;
     d->gutter = gtk_drawing_area_new();
     gtk_widget_set_size_request(d->gutter, 76, 100);
@@ -520,7 +630,43 @@ GtkWidget* codeview_new() {
     gtk_box_pack_start(GTK_BOX(inner), d->gutter, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(inner), d->view, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(d->scroll), inner);
-    gtk_box_pack_start(GTK_BOX(box), d->scroll, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(code_box), d->scroll, TRUE, TRUE, 0);
+    // Inspection pane: scope label + name/type/value list.
+    d->inspect_frame =
+        gtk_frame_new("Variables in scope \u2014 automatic inspection");
+    GtkWidget* ivbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(ivbox), 6);
+    d->scope_label = gtk_label_new(
+        "No target running \u2014 start the debugger to inspect "
+        "variables.");
+    gtk_label_set_xalign(GTK_LABEL(d->scope_label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(d->scope_label),
+                            PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(ivbox), d->scope_label, FALSE, FALSE, 0);
+    d->vars_store =
+        gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    GtkWidget* vars_view =
+        gtk_tree_view_new_with_model(GTK_TREE_MODEL(d->vars_store));
+    {
+        auto add_col = [&](const char* title, int col, bool expand) {
+            GtkCellRenderer* r = gtk_cell_renderer_text_new();
+            GtkTreeViewColumn* c = gtk_tree_view_column_new_with_attributes(
+                title, r, "text", col, NULL);
+            gtk_tree_view_column_set_expand(c, expand);
+            gtk_tree_view_append_column(GTK_TREE_VIEW(vars_view), c);
+        };
+        add_col("Name", 0, FALSE);
+        add_col("Type", 1, FALSE);
+        add_col("Value", 2, TRUE);
+    }
+    GtkWidget* vscroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(vscroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(vscroll, -1, 140);
+    gtk_container_add(GTK_CONTAINER(vscroll), vars_view);
+    gtk_box_pack_start(GTK_BOX(ivbox), vscroll, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(d->inspect_frame), ivbox);
+    gtk_box_pack_start(GTK_BOX(box), d->inspect_frame, FALSE, FALSE, 0);
     g_signal_connect(d->view, "size-allocate",
                      G_CALLBACK(on_view_size_allocate), d);
     GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(
@@ -545,6 +691,7 @@ void codeview_set_text(GtkWidget* cv, const std::string& text,
     d->folded.clear();
     d->breakpoints.clear();
     d->current_line = 0;
+    d->paused_line = 0;  // new file: no paused line until the next stop
     GtkTextBuffer* buf =
         gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->view));
     gtk_text_buffer_set_text(buf, text.c_str(), -1);
@@ -561,6 +708,7 @@ void codeview_set_text(GtkWidget* cv, const std::string& text,
     else
         g_object_set(d->cur_tag, "background", d->theme.current_line.c_str(),
                      NULL);
+    ensure_paused_tag(d, buf);
     theme_highlight_buffer(buf, d->theme);
     theme_apply_to_view(d->view, d->theme);
     apply_folds(d);
@@ -589,6 +737,8 @@ void codeview_set_theme(GtkWidget* cv, const CodeTheme& theme) {
     if (d->cur_tag)
         g_object_set(d->cur_tag, "background", theme.current_line.c_str(),
                      NULL);
+    ensure_paused_tag(d, buf);  // paused red is theme-independent
+    apply_line_marks(d);
     theme_highlight_buffer(buf, theme);
     theme_apply_to_view(d->view, theme);
     queue_redraw(d);
@@ -610,6 +760,55 @@ void codeview_set_current_line(GtkWidget* cv, int line_1based) {
 int codeview_current_line(GtkWidget* cv) {
     CodeViewData* d = data_of(cv);
     return d ? d->current_line : 0;
+}
+
+void codeview_set_paused_line(GtkWidget* cv, int line_1based) {
+    CodeViewData* d = data_of(cv);
+    if (!d) return;
+    d->paused_line = line_1based;
+    apply_line_marks(d);
+    queue_redraw(d);
+    if (line_1based >= 1) {
+        GtkTextBuffer* buf =
+            gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->view));
+        if (line_1based <= gtk_text_buffer_get_line_count(buf)) {
+            GtkTextIter it;
+            gtk_text_buffer_get_iter_at_line(buf, &it, line_1based - 1);
+            gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(d->view), &it, 0.0,
+                                         TRUE, 0.0, 0.5);
+        }
+    }
+}
+
+int codeview_paused_line(GtkWidget* cv) {
+    CodeViewData* d = data_of(cv);
+    return d ? d->paused_line : 0;
+}
+
+void codeview_set_inspection(GtkWidget* cv, CodeViewInspectState state,
+                             const std::string& scope_label,
+                             const std::vector<Variable>& vars) {
+    CodeViewData* d = data_of(cv);
+    if (!d) return;
+    d->inspect_state = state;
+    d->inspect_scope = scope_label;
+    d->inspect_vars = vars;
+    refresh_inspection_ui(d);
+}
+
+CodeViewInspectState codeview_inspection_state(GtkWidget* cv) {
+    CodeViewData* d = data_of(cv);
+    return d ? d->inspect_state : CodeViewInspectState::NoTarget;
+}
+
+std::string codeview_inspection_scope(GtkWidget* cv) {
+    CodeViewData* d = data_of(cv);
+    return d ? d->inspect_scope : std::string();
+}
+
+std::vector<Variable> codeview_inspection_vars(GtkWidget* cv) {
+    CodeViewData* d = data_of(cv);
+    return d ? d->inspect_vars : std::vector<Variable>();
 }
 
 void codeview_set_breakpoint_callback(
