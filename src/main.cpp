@@ -182,6 +182,8 @@ struct Item {
 
 static Project g_project;
 static GtkWidget* g_window = nullptr;
+static GtkWidget* g_palette_window = nullptr;  // top-level palette window
+static GtkWidget* g_palette_menu_item = nullptr;  // View -> Widget Palette
 static GtkWidget* g_canvas = nullptr;      // GtkFixed
 static GtkWidget* g_viewport = nullptr;    // canvas parent (window background)
 static GtkWidget* g_statusbar = nullptr;
@@ -2407,6 +2409,39 @@ static void on_palette_clicked(GtkButton*, gpointer data) {
     add_widget((const char*)data);
 }
 
+// ------------------------------------------------------- palette window
+// The widget palette lives in its own top-level window ("FDesigner —
+// Widgets"), opened together with the designer. It is a plain top-level
+// window, never transient/modal, so design, palette and code windows
+// coexist. Closing it only hides it; View -> Widget Palette brings it
+// back.
+
+static void palette_window_show() {
+    if (!g_palette_window) return;
+    gtk_widget_show_all(g_palette_window);
+    gtk_window_present(GTK_WINDOW(g_palette_window));
+}
+
+static void palette_window_hide() {
+    if (g_palette_window) gtk_widget_hide(g_palette_window);
+}
+
+static gboolean on_palette_window_delete(GtkWidget*, GdkEvent*,
+                                         gpointer) {
+    // Close button hides the palette instead of destroying it, so the
+    // app keeps running and the palette can be reopened.
+    if (g_palette_menu_item)
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(g_palette_menu_item), FALSE);
+    gtk_widget_hide(g_palette_window);
+    return TRUE;  // do not destroy
+}
+
+static void on_view_palette_toggled(GtkCheckMenuItem* item, gpointer) {
+    if (gtk_check_menu_item_get_active(item)) palette_window_show();
+    else palette_window_hide();
+}
+
 static gboolean on_canvas_press(GtkWidget*, GdkEventButton* e, gpointer) {
     if (e->button == 1) select_item(nullptr);  // clicked empty canvas
     return FALSE;
@@ -3747,8 +3782,10 @@ int main(int argc, char** argv) {
     g_props_box = GTK_WIDGET(gtk_builder_get_object(builder, "props_box"));
     g_selected_label =
         GTK_WIDGET(gtk_builder_get_object(builder, "selected_label"));
+    g_palette_window =
+        GTK_WIDGET(gtk_builder_get_object(builder, "palette_window"));
     if (!g_window || !g_canvas || !g_statusbar || !g_props_grid ||
-        !g_props_box || !g_selected_label) {
+        !g_props_box || !g_selected_label || !g_palette_window) {
         std::fprintf(stderr, "fdesigner: designer.ui is missing core objects\n");
         return 1;
     }
@@ -3836,6 +3873,16 @@ int main(int argc, char** argv) {
                                                });
                          }),
                          nullptr);
+    // View menu -> widget palette window (show/hide toggle).
+    GObject* mi_pal = gtk_builder_get_object(builder, "mi_view_palette");
+    if (mi_pal) {
+        g_palette_menu_item = GTK_WIDGET(mi_pal);
+        g_signal_connect(mi_pal, "toggled",
+                         G_CALLBACK(on_view_palette_toggled), nullptr);
+    }
+    g_signal_connect(g_palette_window, "delete-event",
+                     G_CALLBACK(on_palette_window_delete), nullptr);
+
     // Debug menu -> stepping debugger window / settings.
     GObject* mi_dbg = gtk_builder_get_object(builder, "mi_debug_open");
     if (mi_dbg)
@@ -3900,6 +3947,43 @@ int main(int argc, char** argv) {
     refresh_props();  // window properties until something is selected
     status("Phase 2 — pick a widget from the palette to place it");
     gtk_widget_show_all(g_window);
+
+    // Palette window: its own top-level window, opened together with the
+    // designer and parked to the left of the design window (right if
+    // there is no room on the left). Plain top-level, not transient or
+    // modal, so it never blocks the canvas.
+    if (g_palette_window) {
+        // [palette-window] Tight Lazarus-style packing: small buttons,
+        // minimal padding, no whitespace between rows. USER priority so
+        // it wins over the application theme/font providers.
+        GtkCssProvider* pal_css = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(
+            pal_css,
+            "#palette_window button { min-height: 20px; padding: 1px 4px; }"
+            "#palette_window button label { padding: 0px; }"
+            "#palette_window label { padding: 0px; }",
+            -1, nullptr);
+        gtk_style_context_add_provider(
+            gtk_widget_get_style_context(g_palette_window),
+            GTK_STYLE_PROVIDER(pal_css),
+            GTK_STYLE_PROVIDER_PRIORITY_USER);
+        gtk_widget_show_all(g_palette_window);
+        while (gtk_events_pending()) gtk_main_iteration();
+        gint mx = 0, my = 0, mw = 0;
+        gtk_window_get_position(GTK_WINDOW(g_window), &mx, &my);
+        gtk_window_get_size(GTK_WINDOW(g_window), &mw, nullptr);
+        gint pw = 0;
+        gtk_window_get_size(GTK_WINDOW(g_palette_window), &pw, nullptr);
+        gint px = (mx >= pw + 12) ? mx - pw - 12 : mx + mw + 12;
+        GdkRectangle mgeo = {0, 0, 1920, 1080};
+        GdkMonitor* mon = gdk_display_get_primary_monitor(
+            gdk_screen_get_display(gdk_screen_get_default()));
+        if (mon) gdk_monitor_get_geometry(mon, &mgeo);
+        gint sw = mgeo.width;
+        if (px + pw > sw) px = sw - pw - 4;
+        if (px < 0) px = 0;
+        gtk_window_move(GTK_WINDOW(g_palette_window), px, my);
+    }
 
     if (std::getenv("FDESIGNER_OPEN_DEBUGGER") != nullptr)
         g_idle_add(+[](gpointer) -> gboolean {

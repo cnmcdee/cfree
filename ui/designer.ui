@@ -118,6 +118,13 @@
                         <property name="visible">True</property>
                       </object>
                     </child>
+                    <child>
+                      <object class="GtkCheckMenuItem" id="mi_view_palette">
+                        <property name="label">Widget Palette</property>
+                        <property name="visible">True</property>
+                        <property name="active">True</property>
+                      </object>
+                    </child>
                   </object>
                 </child>
               </object>
@@ -203,277 +210,6 @@
             <property name="orientation">horizontal</property>
             <property name="visible">True</property>
             <child>
-              <object class="GtkScrolledWindow" id="palette_scroll">
-                <property name="width_request">170</property>
-                <property name="visible">True</property>
-                <child>
-                  <object class="GtkBox" id="palette_box">
-                    <property name="orientation">vertical</property>
-                    <property name="spacing">4</property>
-                    <property name="margin_start">6</property>
-                    <property name="margin_end">6</property>
-                    <property name="margin_top">6</property>
-                    <property name="visible">True</property>
-                    <child>
-                      <object class="GtkLabel" id="palette_label">
-                        <property name="label">&lt;b&gt;Widgets&lt;/b&gt;</property>
-                        <property name="use_markup">True</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_button">
-                        <property name="label">Button</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_label">
-                        <property name="label">Label</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_entry">
-                        <property name="label">Entry</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_checkbutton">
-                        <property name="label">CheckButton</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_radiobutton">
-                        <property name="label">RadioButton</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_frame">
-                        <property name="label">Frame</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_combobox">
-                        <property name="label">ComboBox</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_listbox">
-                        <property name="label">ListBox</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_menubutton">
-                        <property name="label">MenuButton</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_canvas">
-                        <property name="label">Canvas</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_scale">
-                        <property name="label">Scale</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_scrollbar">
-                        <property name="label">Scrollbar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_text">
-                        <property name="label">Text</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_toplevel">
-                        <property name="label">Toplevel</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_spreadsheet">
-                        <property name="label">Spreadsheet</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_stockchart">
-                        <property name="label">StockChart</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkLabel" id="pal_section_lazarus">
-                        <property name="label">&lt;b&gt;Lazarus — Basic&lt;/b&gt;</property>
-                        <property name="use_markup">True</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_memo">
-                        <property name="label">Memo</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_groupbox">
-                        <property name="label">GroupBox</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_panel">
-                        <property name="label">Panel</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_image">
-                        <property name="label">Image</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_shape">
-                        <property name="label">Shape</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkLabel" id="pal_section_containers">
-                        <property name="label">&lt;b&gt;Containers&lt;/b&gt;</property>
-                        <property name="use_markup">True</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_notebook">
-                        <property name="label">Notebook</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_scrollbox">
-                        <property name="label">ScrollBox</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_splitter">
-                        <property name="label">Splitter</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_statusbar">
-                        <property name="label">StatusBar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_toolbar">
-                        <property name="label">ToolBar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_menubar">
-                        <property name="label">MenuBar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkLabel" id="pal_section_input">
-                        <property name="label">&lt;b&gt;Input&lt;/b&gt;</property>
-                        <property name="use_markup">True</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_spinedit">
-                        <property name="label">SpinEdit</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_trackbar">
-                        <property name="label">TrackBar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_progressbar">
-                        <property name="label">ProgressBar</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_datetimepicker">
-                        <property name="label">DateTimePicker</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_colorbox">
-                        <property name="label">ColorBox</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkLabel" id="pal_section_data">
-                        <property name="label">&lt;b&gt;Data / Display&lt;/b&gt;</property>
-                        <property name="use_markup">True</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_listview">
-                        <property name="label">ListView</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_treeview">
-                        <property name="label">TreeView</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_stringgrid">
-                        <property name="label">StringGrid</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkButton" id="pal_plot">
-                        <property name="label">Plot</property>
-                        <property name="visible">True</property>
-                      </object>
-                    </child>
-                  </object>
-                </child>
-              </object>
-              <packing>
-                <property name="resize">False</property>
-                <property name="shrink">False</property>
-              </packing>
-            </child>
-            <child>
               <object class="GtkPaned" id="canvas_props_paned">
                 <property name="orientation">horizontal</property>
                 <property name="visible">True</property>
@@ -550,6 +286,525 @@
             <property name="fill">True</property>
             <property name="position">2</property>
           </packing>
+        </child>
+      </object>
+    </child>
+  </object>
+  <object class="GtkWindow" id="palette_window">
+    <property name="title">FDesigner — Widgets</property>
+    <property name="default_width">250</property>
+    <property name="default_height">780</property>
+    <child>
+      <object class="GtkScrolledWindow" id="palette_scroll">
+        <property name="width_request">230</property>
+        <property name="visible">True</property>
+        <child>
+                              <object class="GtkGrid" id="palette_box">
+            <property name="row_spacing">2</property>
+            <property name="column_spacing">2</property>
+            <property name="margin_start">2</property>
+            <property name="margin_end">2</property>
+            <property name="margin_top">2</property>
+            <property name="margin_bottom">2</property>
+            <property name="visible">True</property>
+            <child>
+              <object class="GtkLabel" id="palette_label">
+                <property name="label">&lt;b&gt;Widgets&lt;/b&gt;</property>
+                <property name="use_markup">True</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">0</property>
+                <property name="width">2</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_button">
+                <property name="label">Button</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">1</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_label">
+                <property name="label">Label</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">1</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_entry">
+                <property name="label">Entry</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">2</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_checkbutton">
+                <property name="label">CheckButton</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">2</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_radiobutton">
+                <property name="label">RadioButton</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">3</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_frame">
+                <property name="label">Frame</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">3</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_combobox">
+                <property name="label">ComboBox</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">4</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_listbox">
+                <property name="label">ListBox</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">4</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_menubutton">
+                <property name="label">MenuButton</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">5</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_canvas">
+                <property name="label">Canvas</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">5</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_scale">
+                <property name="label">Scale</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">6</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_scrollbar">
+                <property name="label">Scrollbar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">6</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_text">
+                <property name="label">Text</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">7</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_toplevel">
+                <property name="label">Toplevel</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">7</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_spreadsheet">
+                <property name="label">Spreadsheet</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">8</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_stockchart">
+                <property name="label">StockChart</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">8</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkLabel" id="pal_section_lazarus">
+                <property name="label">&lt;b&gt;Lazarus — Basic&lt;/b&gt;</property>
+                <property name="use_markup">True</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">9</property>
+                <property name="width">2</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_memo">
+                <property name="label">Memo</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">10</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_groupbox">
+                <property name="label">GroupBox</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">10</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_panel">
+                <property name="label">Panel</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">11</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_image">
+                <property name="label">Image</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">11</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_shape">
+                <property name="label">Shape</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">12</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkLabel" id="pal_section_containers">
+                <property name="label">&lt;b&gt;Containers&lt;/b&gt;</property>
+                <property name="use_markup">True</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">13</property>
+                <property name="width">2</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_notebook">
+                <property name="label">Notebook</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">14</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_scrollbox">
+                <property name="label">ScrollBox</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">14</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_splitter">
+                <property name="label">Splitter</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">15</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_statusbar">
+                <property name="label">StatusBar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">15</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_toolbar">
+                <property name="label">ToolBar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">16</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_menubar">
+                <property name="label">MenuBar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">16</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkLabel" id="pal_section_input">
+                <property name="label">&lt;b&gt;Input&lt;/b&gt;</property>
+                <property name="use_markup">True</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">17</property>
+                <property name="width">2</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_spinedit">
+                <property name="label">SpinEdit</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">18</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_trackbar">
+                <property name="label">TrackBar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">18</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_progressbar">
+                <property name="label">ProgressBar</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">19</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_datetimepicker">
+                <property name="label">DateTimePicker</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">19</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_colorbox">
+                <property name="label">ColorBox</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">20</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkLabel" id="pal_section_data">
+                <property name="label">&lt;b&gt;Data / Display&lt;/b&gt;</property>
+                <property name="use_markup">True</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">21</property>
+                <property name="width">2</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_listview">
+                <property name="label">ListView</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">22</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_treeview">
+                <property name="label">TreeView</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">22</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_stringgrid">
+                <property name="label">StringGrid</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">0</property>
+                <property name="top_attach">23</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="pal_plot">
+                <property name="label">Plot</property>
+                <property name="visible">True</property>
+              </object>
+              <packing>
+                <property name="left_attach">1</property>
+                <property name="top_attach">23</property>
+                <property name="width">1</property>
+                <property name="height">1</property>
+              </packing>
+            </child>
+          </object>
         </child>
       </object>
     </child>
