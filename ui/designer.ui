@@ -50,6 +50,24 @@
                       </object>
                     </child>
                     <child>
+                      <object class="GtkMenuItem" id="mi_cmake_build">
+                        <property name="label">Build with CMake…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_cmake_open">
+                        <property name="label">Open CMake Project…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkMenuItem" id="mi_cmake_settings">
+                        <property name="label">CMake Settings…</property>
+                        <property name="visible">True</property>
+                      </object>
+                    </child>
+                    <child>
                       <object class="GtkSeparatorMenuItem" id="mi_sep2">
                         <property name="visible">True</property>
                       </object>

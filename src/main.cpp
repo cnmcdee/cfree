@@ -33,6 +33,7 @@
 #include "props.h"
 #include "drawings.h"
 #include "generator.h"
+#include "cmake_build.h"
 #include "indicators.h"
 #include "project_io.h"
 #include "debugger.h"
@@ -191,6 +192,8 @@ static GtkCssProvider* g_canvas_css = nullptr;
 static std::vector<Item*> g_items;
 static Item* g_selected = nullptr;
 static std::string g_current_file;  // .fdj path, "" = untitled
+// ---- CMake (cmake_build.h) ----
+static std::string g_last_generated_dir;  // folder of the last Generate
 static std::map<std::string, int> g_counters;  // per-type name counters
 static int g_cascade = 0;
 
@@ -2373,6 +2376,10 @@ static Project snapshot_project() {
     return p;
 }
 
+// ---- CMake (cmake_build.h) ----
+// Forward declaration: defined just below on_generate.
+static bool cmake_build_dir(const std::string& dir);
+
 static void on_generate(GtkMenuItem*, gpointer) {
     GtkWidget* dlg = gtk_file_chooser_dialog_new(
         "Generate C++/GTK — choose a folder", GTK_WINDOW(g_window),
@@ -2386,22 +2393,181 @@ static void on_generate(GtkMenuItem*, gpointer) {
         gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
     gtk_widget_destroy(dlg);
     if (!folder) return;
-    Project p = snapshot_project();
-    GenResult r = generate_project(p, p.widgets, folder);
+    std::string folder_s = folder;
     g_free(folder);
+    Project p = snapshot_project();
+    GenResult r = generate_project(p, p.widgets, folder_s);
     if (!r.ok) {
         status("Generate failed — " + r.error);
         return;
     }
+    // ---- CMake (cmake_build.h) ----
+    g_last_generated_dir = folder_s;
     std::string list;
     for (const std::string& f : r.files) list += f + "\n";
     status("Generated " + std::to_string(r.files.size()) +
-           " files — build with make in that folder");
-    GtkWidget* msg = gtk_message_dialog_new(
-        GTK_WINDOW(g_window), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO,
-        GTK_BUTTONS_OK, "Generated C++/GTK project:\n\n%s", list.c_str());
-    gtk_dialog_run(GTK_DIALOG(msg));
+           " files — build with make, or CMake, in that folder");
+    GtkWidget* msg = gtk_dialog_new_with_buttons(
+        "Generated C++/GTK project", GTK_WINDOW(g_window),
+        GTK_DIALOG_MODAL, "_Build with CMake", GTK_RESPONSE_ACCEPT, "_Close",
+        GTK_RESPONSE_CLOSE, nullptr);
+    GtkWidget* label = gtk_label_new(
+        ("Generated C++/GTK project:\n\n" + list).c_str());
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(
+                          GTK_DIALOG(msg))),
+                      label);
+    gtk_widget_show_all(msg);
+    // CMake is the default build path for a generated project: one click
+    // here configures + builds it (File -> Build with CMake… does the
+    // same later, for the last generated folder).
+    bool build_now = gtk_dialog_run(GTK_DIALOG(msg)) == GTK_RESPONSE_ACCEPT;
     gtk_widget_destroy(msg);
+    if (build_now) cmake_build_dir(folder_s);
+}
+
+// ------------------------------------------------------- CMake
+// (cmake_build.h) Builds a project directory with CMake instead of the
+// plain g++ / make command. Settings (generator, build type, build
+// directory) live in ~/.config/fdesigner/cmake.conf.
+
+static void show_build_result(const std::string& title,
+                              const CMakeBuildResult& r) {
+    status(r.ok ? ("CMake build OK — " + r.exe_path)
+                : "CMake build FAILED — see log");
+    GtkWidget* dlg = gtk_dialog_new_with_buttons(
+        title.c_str(), GTK_WINDOW(g_window), GTK_DIALOG_MODAL, "_Close",
+        GTK_RESPONSE_CLOSE, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 700, 420);
+    std::string head =
+        r.ok ? std::string("Build succeeded.\nExecutable: ") + r.exe_path +
+                   "\n\n"
+             : std::string("Build FAILED.\n\n");
+    // Keep the dialog readable: show the tail of the log.
+    std::string log = r.output;
+    if (log.size() > 6000) log = "[…]\n" + log.substr(log.size() - 6000);
+    GtkWidget* view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+    gtk_text_buffer_set_text(buf, (head + log).c_str(), -1);
+    GtkWidget* scroll = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_container_add(GTK_CONTAINER(scroll), view);
+    gtk_container_add(
+        GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), scroll);
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+// Configure + build `dir` with the saved CMake settings and report the
+// result. Returns false when `dir` holds no CMakeLists.txt.
+static bool cmake_build_dir(const std::string& dir) {
+    if (!cmake_project_exists(dir)) {
+        status("No CMakeLists.txt in " + dir);
+        GtkWidget* msg = gtk_message_dialog_new(
+            GTK_WINDOW(g_window), GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR,
+            GTK_BUTTONS_OK, "No CMakeLists.txt in:\n%s", dir.c_str());
+        gtk_dialog_run(GTK_DIALOG(msg));
+        gtk_widget_destroy(msg);
+        return false;
+    }
+    CMakeSettings s;
+    s.load();
+    status("Building with CMake in " + dir + " …");
+    CMakeBuildResult r = cmake_build_project(dir, s);
+    show_build_result("CMake build — " + dir, r);
+    return r.ok;
+}
+
+// File -> Build with CMake… : rebuilds the last generated project, or
+// asks for a project folder when there is none yet.
+static void on_cmake_build(GtkMenuItem*, gpointer) {
+    std::string dir = g_last_generated_dir;
+    if (dir.empty() || !cmake_project_exists(dir)) {
+        GtkWidget* dlg = gtk_file_chooser_dialog_new(
+            "Build with CMake — choose a project folder",
+            GTK_WINDOW(g_window), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+            "_Cancel", GTK_RESPONSE_CANCEL, "_Build", GTK_RESPONSE_ACCEPT,
+            nullptr);
+        if (gtk_dialog_run(GTK_DIALOG(dlg)) != GTK_RESPONSE_ACCEPT) {
+            gtk_widget_destroy(dlg);
+            return;
+        }
+        gchar* folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        gtk_widget_destroy(dlg);
+        if (!folder) return;
+        dir = folder;
+        g_free(folder);
+    }
+    cmake_build_dir(dir);
+}
+
+// File -> Open CMake Project… : point the designer at any directory
+// holding a CMakeLists.txt (generated or hand-written) and build it.
+static void on_cmake_open(GtkMenuItem*, gpointer) {
+    GtkWidget* dlg = gtk_file_chooser_dialog_new(
+        "Open CMake Project — choose a folder with a CMakeLists.txt",
+        GTK_WINDOW(g_window), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        "_Cancel", GTK_RESPONSE_CANCEL, "_Open & Build", GTK_RESPONSE_ACCEPT,
+        nullptr);
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) != GTK_RESPONSE_ACCEPT) {
+        gtk_widget_destroy(dlg);
+        return;
+    }
+    gchar* folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+    gtk_widget_destroy(dlg);
+    if (!folder) return;
+    std::string dir = folder;
+    g_free(folder);
+    g_last_generated_dir = dir;  // so Build with CMake… rebuilds it
+    cmake_build_dir(dir);
+}
+
+// File -> CMake Settings… : generator / build type / build directory /
+// cmake command, persisted to ~/.config/fdesigner/cmake.conf.
+static void on_cmake_settings(GtkMenuItem*, gpointer) {
+    CMakeSettings s;
+    s.load();
+    GtkWidget* dlg = gtk_dialog_new_with_buttons(
+        "CMake Settings", GTK_WINDOW(g_window), GTK_DIALOG_MODAL, "_Cancel",
+        GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, nullptr);
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 12);
+    auto add_row = [&](int row, const char* label, GtkWidget* entry) {
+        gtk_grid_attach(GTK_GRID(grid), gtk_label_new(label), 0, row, 1, 1);
+        gtk_grid_attach(GTK_GRID(grid), entry, 1, row, 1, 1);
+    };
+    GtkWidget* e_cmake = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(e_cmake), s.cmake_path.c_str());
+    add_row(0, "CMake command:", e_cmake);
+    GtkWidget* e_gen = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(e_gen), s.generator.c_str());
+    gtk_entry_set_placeholder_text(GTK_ENTRY(e_gen),
+                                   "empty = CMake default");
+    add_row(1, "Generator:", e_gen);
+    GtkWidget* e_type = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(e_type), s.build_type.c_str());
+    add_row(2, "Build type:", e_type);
+    GtkWidget* e_dir = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(e_dir), s.build_dir.c_str());
+    add_row(3, "Build directory:", e_dir);
+    gtk_container_add(
+        GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), grid);
+    gtk_widget_show_all(dlg);
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        s.cmake_path = gtk_entry_get_text(GTK_ENTRY(e_cmake));
+        s.generator = gtk_entry_get_text(GTK_ENTRY(e_gen));
+        s.build_type = gtk_entry_get_text(GTK_ENTRY(e_type));
+        s.build_dir = gtk_entry_get_text(GTK_ENTRY(e_dir));
+        if (s.save())
+            status("CMake settings saved to " + CMakeSettings::default_path());
+        else
+            status("CMake settings save FAILED");
+    }
+    gtk_widget_destroy(dlg);
 }
 
 // ------------------------------------------------------- file operations
@@ -2574,9 +2740,30 @@ static gboolean selftest_step(gpointer) {
         Project snap = snapshot_project();
         GenResult gr = generate_project(snap, snap.widgets,
                                         "/tmp/fdesigner_gen_test");
-        check(gr.ok && gr.files.size() == 4 + 2 * snap.widgets.size());
+        check(gr.ok && gr.files.size() == 5 + 2 * snap.widgets.size());
         check(!g_file_test("/tmp/fdesigner_gen_test/mywindow.ui",
                            G_FILE_TEST_EXISTS));  // all code, no .ui
+        // ---- CMake (cmake_build.h) ----
+        // The generator also emits a CMakeLists.txt for the project.
+        gchar* cmake_text = nullptr;
+        check(g_file_get_contents("/tmp/fdesigner_gen_test/CMakeLists.txt",
+                                  &cmake_text, nullptr, nullptr) &&
+              cmake_text != nullptr);
+        if (cmake_text) {
+            std::string cm = cmake_text;
+            check(cm.find("cmake_minimum_required(VERSION 3.10)") !=
+                  std::string::npos);
+            check(cm.find("project(MyWindow CXX)") != std::string::npos);
+            check(cm.find("pkg_check_modules(GTK3 REQUIRED gtk+-3.0)") !=
+                  std::string::npos);
+            check(cm.find("add_executable(app") != std::string::npos);
+            check(cm.find("main.cpp") != std::string::npos &&
+                  cm.find("MyWindow.cpp") != std::string::npos &&
+                  cm.find("Button_001.cpp") != std::string::npos);
+            check(cm.find("target_link_libraries(app PRIVATE "
+                          "${GTK3_LIBRARIES})") != std::string::npos);
+            g_free(cmake_text);
+        }
         gchar* code_text = nullptr;
         check(g_file_get_contents("/tmp/fdesigner_gen_test/MyWindow.cpp",
                                   &code_text, nullptr, nullptr) &&
@@ -3053,6 +3240,61 @@ static gboolean selftest_step(gpointer) {
         gtk_widget_destroy(tv);
         preferences_apply(fs);  // screen-wide, must not crash
         preferences_apply(FontSettings());  // back to defaults
+
+    // ---- CMake (cmake_build.h) ---- Phase 9: settings round-trip,
+    // CMakeLists.txt text, and a real configure+build of a small CMake
+    // project (console, plus a generated GTK project built by cmake).
+    {
+        CMakeSettings cs;
+        cs.generator = "Unix Makefiles";
+        cs.build_type = "Debug";
+        cs.build_dir = "out";
+        cs.cmake_path = "cmake";
+        check(cs.save("/tmp/fdesigner_cmake.conf"));
+        CMakeSettings cs2;
+        check(cs2.load("/tmp/fdesigner_cmake.conf"));
+        check(cs2.generator == "Unix Makefiles" &&
+              cs2.build_type == "Debug" && cs2.build_dir == "out" &&
+              cs2.cmake_path == "cmake");
+        check(cmake_lists_text("Demo", {"main.cpp", "Foo.cpp"}).find(
+                  "add_executable(app") != std::string::npos);
+        check(!cmake_project_exists("/tmp/fdesigner_cmake_nodir_xyz"));
+        // Hand-written console CMake project: configure + build + run.
+        std::system("rm -rf /tmp/fdesigner_cmake_console && mkdir -p "
+                    "/tmp/fdesigner_cmake_console");
+        {
+            std::ofstream f("/tmp/fdesigner_cmake_console/CMakeLists.txt");
+            f << "cmake_minimum_required(VERSION 3.10)\n"
+              << "project(console_demo CXX)\n"
+              << "add_executable(app main.cpp)\n";
+        }
+        {
+            std::ofstream f("/tmp/fdesigner_cmake_console/main.cpp");
+            f << "#include <cstdio>\nint main() { std::printf(\"hi\\n\"); "
+                 "return 0; }\n";
+        }
+        CMakeSettings def;
+        check(cmake_project_exists("/tmp/fdesigner_cmake_console"));
+        CMakeBuildResult cr =
+            cmake_build_project("/tmp/fdesigner_cmake_console", def);
+        check(cr.ok && cr.configured);
+        check(std::system("/tmp/fdesigner_cmake_console/build/app "
+                          "> /tmp/fdesigner_cmake_console/run.log 2>&1") ==
+              0);
+        // A broken CMakeLists.txt must fail cleanly, not claim success.
+        std::system("rm -rf /tmp/fdesigner_cmake_broken && mkdir -p "
+                    "/tmp/fdesigner_cmake_broken");
+        {
+            std::ofstream f("/tmp/fdesigner_cmake_broken/CMakeLists.txt");
+            f << "this is not valid cmake (\n";
+        }
+        CMakeBuildResult bad =
+            cmake_build_project("/tmp/fdesigner_cmake_broken", def);
+        check(!bad.ok);
+        // The generated GTK project from Phase 3 builds with cmake too.
+        CMakeBuildResult gr_cmake =
+            cmake_build_project("/tmp/fdesigner_gen_test", def);
+        check(gr_cmake.ok && gr_cmake.configured);
     }
 
     std::printf("SELFTEST %s items=%zu\n", ok ? "PASS" : "FAIL",
@@ -3153,6 +3395,21 @@ int main(int argc, char** argv) {
                          G_CALLBACK(+[](GtkMenuItem*, gpointer) {
                              preferences_open(g_window);
                          }),
+                         nullptr);
+
+    // ---- CMake (cmake_build.h) ----
+    // File -> Build with CMake… / Open CMake Project… / CMake Settings…
+    GObject* mi_cb = gtk_builder_get_object(builder, "mi_cmake_build");
+    if (mi_cb)
+        g_signal_connect(mi_cb, "activate", G_CALLBACK(on_cmake_build),
+                         nullptr);
+    GObject* mi_co = gtk_builder_get_object(builder, "mi_cmake_open");
+    if (mi_co)
+        g_signal_connect(mi_co, "activate", G_CALLBACK(on_cmake_open),
+                         nullptr);
+    GObject* mi_cs = gtk_builder_get_object(builder, "mi_cmake_settings");
+    if (mi_cs)
+        g_signal_connect(mi_cs, "activate", G_CALLBACK(on_cmake_settings),
                          nullptr);
 
     // Debug menu -> stepping debugger window / settings.

@@ -27,7 +27,7 @@ grep -E "GENERATED7" /tmp/widget_selftest.log || true
 
 echo "== widget generator test (per-widget markers) =="
 if g++ -O2 -Wall -Wextra -std=c++17 -o /tmp/widget_tests \
-        tests/widget_tests.cpp src/generator.cpp src/project_io.cpp; then
+        tests/widget_tests.cpp src/generator.cpp src/cmake_build.cpp src/project_io.cpp; then
     rm -rf /tmp/fdesigner_widgets_gen
     if /tmp/widget_tests /tmp/fdesigner_widgets_gen; then
         ok widget-markers

@@ -257,6 +257,48 @@ panel in the main window). It drives real gdb over the MI protocol
   Xvfb, GUI smoke test) — see `tests/debugger/` for the targets and the
   headless harness `dbg_harness.cpp`, which drives `GdbSession` directly.
 
+## CMake handling (2026-11-26)
+
+The generator now also emits a `CMakeLists.txt` next to the `Makefile` in
+every generated project, so a generated project builds with either tool.
+The file sets `cmake_minimum_required(VERSION 3.10)`,
+`project(<ClassName> CXX)`, C++17, `find_package(PkgConfig)` /
+`pkg_check_modules(GTK3 REQUIRED gtk+-3.0)`, lists every generated `.cpp`
+explicitly in `add_executable(app …)`, and wires the GTK include dirs /
+compile options / libraries onto that target. The executable is named
+`app`, matching the Makefile target. Build it with
+`cmake -S . -B build && cmake --build build`.
+
+In the designer, **File → Generate C++/GTK…** now offers **Build with
+CMake** right after generating (CMake is the default build path for a
+generated project); **File → Build with CMake…** rebuilds the last
+generated project (or asks for a folder), and **File → Open CMake
+Project…** points the designer at any directory holding a
+`CMakeLists.txt` — generated or hand-written — and builds it (configure +
+build), reporting success/failure plus the executable path in a log
+dialog. A missing or broken `CMakeLists.txt`, or a compile error, is
+reported as a failure, never as success.
+
+The logic lives in new files `src/cmake_build.h/.cpp`
+(`cmake_lists_text`, `cmake_build_project`, `cmake_project_exists`,
+`CMakeSettings`); the generator only gains the emit call, `main.cpp`
+only the menu callbacks, and `ui/designer.ui` the three File-menu items.
+Settings (cmake command, generator — empty = CMake default, build type,
+build directory) persist in `~/.config/fdesigner/cmake.conf` (key=value,
+same pattern as `debugger.conf`; `FDESIGNER_CMAKE_CONF` overrides the
+path for tests) and are edited via **File → CMake Settings…**.
+
+Tests: `tests/cmake_tests.sh` builds a headless probe
+(`tests/cmake_probe.cpp`) that checks the generated `CMakeLists.txt`
+contents, configures + builds a generated GTK project and runs it under
+Xvfb, builds + runs a hand-written console CMake project and a
+hand-written GTK one, verifies settings save/load and custom build
+directories, checks failure reporting (missing/broken `CMakeLists.txt`,
+compile error), and builds a project in a directory with a space in its
+name. The designer self-test gained a CMake phase (settings round-trip,
+`CMakeLists.txt` markers, real console build, broken-file failure, and a
+cmake build of the generated GTK project).
+
 ## Lazarus-style widgets (2026-11-25)
 
 Twenty Lazarus-palette widgets were added alongside the original Tk set.
