@@ -770,6 +770,31 @@ void debugger_window_open(GtkWidget* parent) {
     if (parent) gtk_window_set_transient_for(GTK_WINDOW(win),
                                              GTK_WINDOW(parent));
     g_dbg_window = win;
+    // Keyboard shortcuts matching the toolbar tooltips: F5 Continue,
+    // F10 Step Over, F11 Step Into. (Also lets scripted tests drive
+    // stepping with xdotool key.)
+    g_signal_connect(win, "key-press-event",
+                     G_CALLBACK(+[](GtkWidget*, GdkEventKey* e,
+                                    gpointer) -> gboolean {
+                         if (!g_session) return FALSE;
+                         std::string err;
+                         const char* w = nullptr;
+                         if (e->keyval == GDK_KEY_F5) w = "cont";
+                         else if (e->keyval == GDK_KEY_F10) w = "over";
+                         else if (e->keyval == GDK_KEY_F11) w = "into";
+                         else return FALSE;
+                         bool ok = false;
+                         if (!std::strcmp(w, "cont"))
+                             ok = g_session->cont(err);
+                         else if (!std::strcmp(w, "over"))
+                             ok = g_session->step_over(err);
+                         else if (!std::strcmp(w, "into"))
+                             ok = g_session->step_into(err);
+                         if (ok) sync_ui_from_session();
+                         else show_error(g_dbg_window, err);
+                         return TRUE;
+                     }),
+                     nullptr);
     g_signal_connect(win, "destroy", G_CALLBACK(+[](GtkWidget*) {
                          g_dbg_window = nullptr;
                          // Keep the session alive for the menu toggles;
@@ -1031,4 +1056,55 @@ std::vector<int> debugger_breakpoint_lines(const std::string& file) {
         if (!b.file.empty() && b.file == file && b.line > 0)
             out.push_back(b.line);
     return out;
+}
+
+// --- code-window integration: the code window reads the SAME session ---
+// (never a second gdb) through these accessors, on its own poll tick.
+void debugger_poll_events() {
+    if (g_session) g_session->poll_events();
+}
+
+DbgState debugger_session_state() {
+    return g_session ? g_session->state() : DbgState::Idle;
+}
+
+unsigned long debugger_stop_seq() {
+    return g_session ? g_session->stop_seq() : 0;
+}
+
+StopInfo debugger_last_stop() {
+    return g_session ? g_session->last_stop() : StopInfo();
+}
+
+std::vector<Variable> debugger_locals() {
+    return g_session ? g_session->locals() : std::vector<Variable>();
+}
+
+void debugger_refresh_on_stop() {
+    if (g_session) g_session->refresh_on_stop();
+}
+
+bool debugger_autorun(const std::string& exe, const std::string& bp_loc,
+                      std::string& err) {
+    if (!ensure_session(err)) return false;
+    if (g_target_entry)
+        gtk_entry_set_text(GTK_ENTRY(g_target_entry), exe.c_str());
+    if (!bp_loc.empty()) {
+        if (g_session->is_alive()) {
+            Breakpoint b;
+            if (!g_session->add_breakpoint(bp_loc, b, err)) return false;
+        } else if (!g_session->stage_breakpoint(bp_loc)) {
+            err = "not a breakpoint location: " + bp_loc;
+            return false;
+        }
+        g_session->save_breakpoints();
+    }
+    if (g_session->state() == DbgState::Stopped ||
+        g_session->state() == DbgState::Exited) {
+        if (!g_session->restart(err)) return false;
+    } else {
+        if (!g_session->start(exe, "", err)) return false;
+    }
+    if (g_dbg_window) sync_ui_from_session();
+    return true;
 }

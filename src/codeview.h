@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "debugger.h"  // Variable (name/type/value) for the inspection pane
 #include "theme.h"
 
 // One foldable span. Lines are 0-based, inclusive at both ends; only
@@ -74,6 +75,18 @@ CodeTheme codeview_theme(GtkWidget* cv);
 // Highlight this file line as the current execution line (0 = none).
 void codeview_set_current_line(GtkWidget* cv, int line_1based);
 int codeview_current_line(GtkWidget* cv);
+// Paused line (0 = none): the line the debugger is paused on. Rendered
+// with a RED full-line background (white text) plus a gutter arrow, in
+// the Lazarus manner: Lazarus marks the execution point with a full-line
+// background highlight (ahaExecutionPoint) and a gutter arrow, distinct
+// from the breakpoint marker (red dot / red highlight). Here the user
+// asked for the paused line in red, so the execution-point background
+// is solid red (#c00000) with white text — readable on any theme —
+// while a breakpoint stays just the red dot in the gutter. The paused
+// tag outranks the current-line tag, so when both point at the same
+// line the red background wins. Clears when execution resumes.
+void codeview_set_paused_line(GtkWidget* cv, int line_1based);
+int codeview_paused_line(GtkWidget* cv);
 // Breakpoint dots (1-based file lines). The widget does not own the
 // debugger; toggling goes through the callback, which returns true
 // when the breakpoint is now set. With no callback, toggling just
@@ -84,6 +97,21 @@ void codeview_set_breakpoint_callback(
 void codeview_set_breakpoint_lines(GtkWidget* cv,
                                    const std::set<int>& lines_1based);
 std::set<int> codeview_breakpoint_lines(GtkWidget* cv);
+// Automatic variable inspection (pane at the bottom of the code
+// window). The host (main) pushes a fresh snapshot whenever the
+// debugger stops / steps / runs / exits; the widget only displays.
+//   NoTarget: no debug session / no target — "start the debugger"
+//   Running:  target is running — NEVER show stale values as current
+//   Stopped:  scope_label names the scope ("func() — file:line
+//             (reason)") and vars are the locals of that frame
+//   Exited:   target exited — scope_label carries the exit code
+enum class CodeViewInspectState { NoTarget, Running, Stopped, Exited };
+void codeview_set_inspection(GtkWidget* cv, CodeViewInspectState state,
+                             const std::string& scope_label,
+                             const std::vector<Variable>& vars);
+CodeViewInspectState codeview_inspection_state(GtkWidget* cv);
+std::string codeview_inspection_scope(GtkWidget* cv);
+std::vector<Variable> codeview_inspection_vars(GtkWidget* cv);
 // Fold state (0-based start lines in the pure API; 1-based here).
 std::vector<FoldRegion> codeview_regions(GtkWidget* cv);
 bool codeview_toggle_fold_at(GtkWidget* cv, int line_1based);

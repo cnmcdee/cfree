@@ -27,6 +27,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "model.h"
@@ -2486,19 +2487,170 @@ static void refresh_code_view() {
     status("Code view - " + path);
 }
 
+// --- code window <-> debugger sync ------------------------------------
+// Polls the SHARED GdbSession (owned by the debugger window) and keeps
+// the code window's paused line + inspection pane in step with it:
+//   Running -> inspection shows "running", paused line cleared (never
+//              present stale values as current)
+//   Stopped -> refresh locals, load the stopped file into the code view
+//              if it is not already shown, red paused-line background,
+//              scope label + locals in the inspection pane
+//   Exited  -> paused line cleared, inspection shows the exit code
+//   Idle    -> inspection shows "no target"
+// Only acts when (state, stop_seq) changed, or when `force` is set
+// (reopen / theme change / startup). The debugger window's own poll
+// drains the same gdb queue; this poll just reads the shared session.
+static unsigned long s_cw_last_seq = 0;
+static DbgState s_cw_last_state = DbgState::Idle;
+
+static const char* cw_state_name(DbgState st) {
+    switch (st) {
+        case DbgState::Idle: return "Idle";
+        case DbgState::Starting: return "Starting";
+        case DbgState::Running: return "Running";
+        case DbgState::Stopped: return "Stopped";
+        case DbgState::Exited: return "Exited";
+        case DbgState::Error: return "Error";
+    }
+    return "Idle";
+}
+
+// Test hook: FDESIGNER_CODEWIN_DUMP=<path> writes a snapshot of the
+// code window's debug state (state, scope, file, paused line, locals)
+// every time the sync applies a change. Used by
+// tests/code_window_tests.sh to assert on the live app.
+static void codewin_dump_snapshot(DbgState st) {
+    const char* path = std::getenv("FDESIGNER_CODEWIN_DUMP");
+    if (!path || !*path || !g_codeview) return;
+    std::string out = "state=";
+    out += cw_state_name(st);
+    out += "\n";
+    out += "scope=" + codeview_inspection_scope(g_codeview) + "\n";
+    out += "file=" + codeview_file_path(g_codeview) + "\n";
+    out += "paused_line=" +
+           std::to_string(codeview_paused_line(g_codeview)) + "\n";
+    out += "current_line=" +
+           std::to_string(codeview_current_line(g_codeview)) + "\n";
+    for (const auto& v : codeview_inspection_vars(g_codeview))
+        out += "var=" + v.name + "|" + v.type + "|" + v.value + "\n";
+    std::string tmp = std::string(path) + ".tmp";
+    std::ofstream f(tmp, std::ios::trunc);
+    if (!f) return;
+    f << out;
+    f.close();
+    std::rename(tmp.c_str(), path);
+}
+
+static void codewin_sync_from_debugger(bool force) {
+    if (!g_codeview) return;
+    debugger_poll_events();
+    DbgState st = debugger_session_state();
+    unsigned long seq = debugger_stop_seq();
+    bool changed = force || st != s_cw_last_state || seq != s_cw_last_seq;
+    if (!changed) return;
+    s_cw_last_state = st;
+    s_cw_last_seq = seq;
+    StopInfo stop = debugger_last_stop();
+    switch (st) {
+        case DbgState::Running:
+            codeview_set_paused_line(g_codeview, 0);
+            codeview_set_current_line(g_codeview, 0);
+            codeview_set_inspection(g_codeview,
+                                    CodeViewInspectState::Running, "", {});
+            break;
+        case DbgState::Stopped: {
+            debugger_refresh_on_stop();
+            stop = debugger_last_stop();
+            if (!stop.frame.file.empty() &&
+                stop.frame.file != codeview_file_path(g_codeview)) {
+                gchar* c = nullptr;
+                if (g_file_get_contents(stop.frame.file.c_str(), &c,
+                                        nullptr, nullptr) &&
+                    c) {
+                    codeview_set_text(g_codeview, c, stop.frame.file);
+                    g_free(c);
+                    std::set<int> bps;
+                    for (int ln :
+                         debugger_breakpoint_lines(stop.frame.file))
+                        bps.insert(ln);
+                    codeview_set_breakpoint_lines(g_codeview, bps);
+                }
+            }
+            std::string scope =
+                stop.frame.function + "() \u2014 " + stop.frame.file +
+                ":" + std::to_string(stop.frame.line);
+            if (!stop.reason.empty()) scope += " (" + stop.reason + ")";
+            codeview_set_inspection(g_codeview,
+                                    CodeViewInspectState::Stopped, scope,
+                                    debugger_locals());
+            // Red paused-line background only on the file actually
+            // shown; otherwise the line number would be meaningless.
+            if (!stop.frame.file.empty() &&
+                stop.frame.file == codeview_file_path(g_codeview)) {
+                // Unfold any region hiding the paused line.
+                int l0 = stop.frame.line - 1;
+                for (const auto& r : codeview_regions(g_codeview))
+                    if (r.start_line < l0 && l0 < r.end_line &&
+                        codeview_is_folded(g_codeview, r.start_line + 1))
+                        codeview_toggle_fold_at(g_codeview,
+                                                r.start_line + 1);
+                codeview_set_current_line(g_codeview, stop.frame.line);
+                codeview_set_paused_line(g_codeview, stop.frame.line);
+            } else {
+                codeview_set_current_line(g_codeview, 0);
+                codeview_set_paused_line(g_codeview, 0);
+            }
+            break;
+        }
+        case DbgState::Exited: {
+            codeview_set_paused_line(g_codeview, 0);
+            codeview_set_current_line(g_codeview, 0);
+            std::string scope = "Target exited";
+            if (stop.exit_code >= 0)
+                scope += " (code " + std::to_string(stop.exit_code) + ")";
+            scope += ".";
+            codeview_set_inspection(g_codeview,
+                                    CodeViewInspectState::Exited, scope, {});
+            break;
+        }
+        default:
+            codeview_set_paused_line(g_codeview, 0);
+            codeview_set_current_line(g_codeview, 0);
+            codeview_set_inspection(g_codeview,
+                                    CodeViewInspectState::NoTarget, "", {});
+            break;
+    }
+    codewin_dump_snapshot(st);
+}
+
+static gboolean on_codewin_poll(gpointer) {
+    codewin_sync_from_debugger(false);
+    return G_SOURCE_CONTINUE;
+}
+
 static void open_code_view() {
     if (!g_codeview_window) {
         g_codeview_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
         gtk_window_set_title(GTK_WINDOW(g_codeview_window),
-                             "Code - generated C++");
-        gtk_window_set_default_size(GTK_WINDOW(g_codeview_window), 900, 600);
-        gtk_window_set_transient_for(GTK_WINDOW(g_codeview_window),
-                                     GTK_WINDOW(g_window));
+                             "FDesigner \u2014 Code");
+        gtk_window_set_default_size(GTK_WINDOW(g_codeview_window), 1000,
+                                    700);
+        // Deliberately NOT transient for the designer: this is its own
+        // top-level window, listed separately by the window manager.
         g_codeview = codeview_new();
         codeview_set_theme(g_codeview, theme_current());
         codeview_set_breakpoint_callback(g_codeview,
                                          debugger_toggle_breakpoint);
         gtk_container_add(GTK_CONTAINER(g_codeview_window), g_codeview);
+        // Closing the window hides it (the app keeps running);
+        // reopening from View -> Code View restores it, refreshed.
+        g_signal_connect(
+            g_codeview_window, "delete-event",
+            G_CALLBACK(+[](GtkWidget* w, GdkEvent*, gpointer) -> gboolean {
+                gtk_widget_hide(w);
+                return TRUE;
+            }),
+            nullptr);
         g_signal_connect(
             g_codeview_window, "destroy",
             G_CALLBACK(+[](GtkWidget*, gpointer) {
@@ -2508,9 +2660,19 @@ static void open_code_view() {
             nullptr);
         gtk_widget_show_all(g_codeview_window);
     } else {
+        gtk_widget_show(g_codeview_window);
         gtk_window_present(GTK_WINDOW(g_codeview_window));
     }
     refresh_code_view();
+    codewin_sync_from_debugger(true);
+}
+
+// View -> Code View toggles the separate top-level code window.
+static void toggle_code_view() {
+    if (g_codeview_window && gtk_widget_get_visible(g_codeview_window))
+        gtk_widget_hide(g_codeview_window);
+    else
+        open_code_view();
 }
 static void on_generate(GtkMenuItem*, gpointer) {
     GtkWidget* dlg = gtk_file_chooser_dialog_new(
@@ -3670,6 +3832,71 @@ static gboolean selftest_step(gpointer) {
         check(codeview_breakpoint_lines(cv).empty());
         codeview_set_current_line(cv, 4);
         check(codeview_current_line(cv) == 4);
+        // Round 3: red paused line (Lazarus-style execution-point
+        // background) + automatic inspection pane.
+        codeview_set_paused_line(cv, 5);
+        check(codeview_paused_line(cv) == 5);
+        {
+            GtkTextBuffer* pbuf = gtk_text_view_get_buffer(
+                GTK_TEXT_VIEW(codeview_text_view(cv)));
+            GtkTextTagTable* ptab =
+                gtk_text_buffer_get_tag_table(pbuf);
+            GtkTextTag* paused = gtk_text_tag_table_lookup(
+                ptab, "theme-paused-line");
+            check(paused != nullptr);
+            if (paused) {
+                // "background"/"foreground" are write-only; the
+                // readable form is "background-gdk"/"foreground-gdk"
+                // (boxed GdkColor*, 16-bit channels), as for the
+                // keyword tag below.
+                GdkColor* bg = nullptr;
+                GdkColor* fg = nullptr;
+                g_object_get(paused, "background-gdk", &bg,
+                             "foreground-gdk", &fg, NULL);
+                // #c00000: red dominant; white text for readability.
+                check(bg && fg && bg->red > 40000 && bg->green < 8000 &&
+                      bg->blue < 8000);
+                check(bg && fg && fg->red > 60000 && fg->green > 60000 &&
+                      fg->blue > 60000);
+                if (bg)
+                    g_boxed_free(g_type_from_name("GdkColor"), bg);
+                if (fg)
+                    g_boxed_free(g_type_from_name("GdkColor"), fg);
+                // Paused tag outranks the current-line tag, so red
+                // wins when both mark the same line.
+                GtkTextTag* cur = gtk_text_tag_table_lookup(
+                    ptab, "theme-current-line");
+                check(cur != nullptr);
+                if (cur)
+                    check(gtk_text_tag_get_priority(paused) >
+                          gtk_text_tag_get_priority(cur));
+            }
+        }
+        codeview_set_paused_line(cv, 0);
+        check(codeview_paused_line(cv) == 0);
+        // Inspection pane: states + scope + vars round-trip, and the
+        // running state carries no (stale) values.
+        check(codeview_inspection_state(cv) ==
+              CodeViewInspectState::NoTarget);
+        std::vector<Variable> ivars = {
+            {"a", "int", "42"}, {"msg", "const char *", "\"hello\""}};
+        codeview_set_inspection(cv, CodeViewInspectState::Stopped,
+                                "main() \u2014 /tmp/x.c:8 (breakpoint-hit)",
+                                ivars);
+        check(codeview_inspection_state(cv) ==
+              CodeViewInspectState::Stopped);
+        check(codeview_inspection_scope(cv) ==
+              "main() \u2014 /tmp/x.c:8 (breakpoint-hit)");
+        check(codeview_inspection_vars(cv).size() == 2);
+        check(codeview_inspection_vars(cv)[0].name == "a");
+        check(codeview_inspection_vars(cv)[0].value == "42");
+        check(codeview_inspection_vars(cv)[1].name == "msg");
+        codeview_set_inspection(cv, CodeViewInspectState::Running, "", {});
+        check(codeview_inspection_state(cv) ==
+              CodeViewInspectState::Running);
+        check(codeview_inspection_vars(cv).empty());
+        codeview_set_inspection(cv, CodeViewInspectState::NoTarget, "",
+                                {});
         codeview_set_theme(cv, dark);
         GtkTextBuffer* cbuf = gtk_text_view_get_buffer(
             GTK_TEXT_VIEW(codeview_text_view(cv)));
@@ -3821,7 +4048,7 @@ int main(int argc, char** argv) {
     if (mi_code)
         g_signal_connect(mi_code, "activate",
                          G_CALLBACK(+[](GtkMenuItem*, gpointer) {
-                             open_code_view();
+                             toggle_code_view();
                          }),
                          nullptr);
     GObject* mi_theme = gtk_builder_get_object(builder, "mi_view_theme");
@@ -3901,6 +4128,13 @@ int main(int argc, char** argv) {
     status("Phase 2 — pick a widget from the palette to place it");
     gtk_widget_show_all(g_window);
 
+    // The code window is a separate top-level window that opens
+    // together with the designer (View -> Code View toggles it).
+    open_code_view();
+    // Keep the code window's paused line + inspection pane in step
+    // with the shared debugger session (200 ms poll).
+    g_timeout_add(200, on_codewin_poll, nullptr);
+
     if (std::getenv("FDESIGNER_OPEN_DEBUGGER") != nullptr)
         g_idle_add(+[](gpointer) -> gboolean {
                        debugger_window_open(g_window);
@@ -3925,6 +4159,26 @@ int main(int argc, char** argv) {
                    },
                    nullptr);
 
+    // Test hook (used by tests/code_window_tests.sh): start a target
+    // under the debugger at startup, staging a breakpoint first.
+    // FDESIGNER_DEBUG_TARGET=<exe> FDESIGNER_DEBUG_BREAK=<file:line>
+    const char* dbg_target = std::getenv("FDESIGNER_DEBUG_TARGET");
+    if (dbg_target != nullptr) {
+        std::string exe = dbg_target;
+        const char* bp = std::getenv("FDESIGNER_DEBUG_BREAK");
+        std::string loc = bp ? bp : "";
+        g_idle_add(
+            +[](gpointer data) -> gboolean {
+                auto* pair = (std::pair<std::string, std::string>*)data;
+                debugger_window_open(g_window);
+                std::string err;
+                if (!debugger_autorun(pair->first, pair->second, err))
+                    status("Debug autorun failed: " + err);
+                delete pair;
+                return G_SOURCE_REMOVE;
+            },
+            new std::pair<std::string, std::string>(exe, loc));
+    }
     // Test hooks (also used by tests/theme_tests.sh): open the code
     // view / theme picker at startup.
     if (std::getenv("FDESIGNER_OPEN_CODEVIEW") != nullptr)

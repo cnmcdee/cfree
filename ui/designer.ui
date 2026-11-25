@@ -108,7 +108,7 @@
                     <property name="visible">True</property>
                     <child>
                       <object class="GtkMenuItem" id="mi_view_code">
-                        <property name="label">Code View…</property>
+                        <property name="label">Code View</property>
                         <property name="visible">True</property>
                       </object>
                     </child>
