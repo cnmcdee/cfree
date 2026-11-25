@@ -381,7 +381,8 @@ background stays white while the tag colours change. Also on this GTK,
 read back — tests read the colour via "foreground-gdk" instead.
 
 Folding (`codeview_find_regions()`, pure, unit-tested) covers every
-natural foldable unit: `#region` / `#endregion`, every matched-brace span
+natural foldable unit: `#region` / `#endregion` (bare, and the
+`// #region` comment form the generator emits), every matched-brace span
 (functions, if/else, loops, classes, structs, namespaces, initializers),
 multi-line `/* */` comments, and `#if` / `#ifdef` / `#ifndef` ... `#endif`
 blocks; nesting works in all directions (braces in regions and vice

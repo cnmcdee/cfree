@@ -96,6 +96,16 @@ std::vector<FoldRegion> codeview_find_regions(
             continue;
         }
         if (line_start && (c == ' ' || c == '\t' || c == '\r')) { ++i; continue; }
+        if (line_start && c == '/' && i + 1 < n && text[i + 1] == '/') {
+            // Comment-style directive (`// #region` / `// #endregion`,
+            // the form the generator emits): parse it as a directive.
+            size_t j = i + 2;
+            while (j < n && (text[j] == ' ' || text[j] == '\t')) ++j;
+            if (j < n && text[j] == '#') {
+                i = j;
+                c = '#';
+            }
+        }
         if (line_start && c == '#') {
             // Preprocessor directive: parse the word, handle the
             // foldable ones, then skip the whole line (no braces counted

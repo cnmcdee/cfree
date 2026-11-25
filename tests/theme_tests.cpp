@@ -228,6 +228,24 @@ int main(int argc, char** argv) {
     std::vector<FoldRegion> sregs =
         codeview_find_regions({"int f() { return 0; }"});
     check(sregs.empty(), "single-line-block-no-fold");
+    // Comment-style region markers (the form the generator emits:
+    // `// #region Name` / `// #endregion`) fold like bare #region.
+    // An unclosed one and one inside a string open no fold.
+    std::vector<std::string> clines = {
+        "    // #region Widget",   // 0
+        "    int x = 1;",          // 1
+        "    // #endregion",       // 2
+        "    // #region Open",     // 3: unclosed, no fold
+        "    int y = 2;",          // 4
+        "const char* s = \"// #region nope\";",  // 5: in a string
+    };
+    std::vector<FoldRegion> cregs = codeview_find_regions(clines);
+    bool cok = false;
+    for (const auto& r : cregs)
+        if (r.start_line == 0 && r.end_line == 2 && r.kind == "region")
+            cok = true;
+    check(cok, "comment-region-folds");
+    check(cregs.size() == 1, "comment-region-count-1");
 
     // 7. Visible lines under folds.
     std::vector<int> vis = codeview_visible_lines(flines, {0});
